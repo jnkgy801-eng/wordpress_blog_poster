@@ -49,9 +49,10 @@ WP_URL           = os.environ.get('WP_URL', '').rstrip('/')      # 例: https://
 WP_USERNAME      = os.environ.get('WP_USERNAME', '')             # WordPressのログインユーザー名
 WP_APP_PASSWORD  = os.environ.get('WP_APP_PASSWORD', '')         # アプリケーションパスワード（通常のログインパスワードとは別物）
 
-# 投稿ステータス。安全のためdraft固定を強く推奨。
-# pending（承認待ち）にしたい場合のみ環境変数で変更可能。publishは非推奨。
-WP_POST_STATUS   = os.environ.get('WP_POST_STATUS', 'draft')
+# 投稿ステータス。draft（下書き）/ pending（承認待ち）/ publish（本公開）から選択。
+# publishを選ぶと人間の目視確認なしにそのままサイトに公開されるため、
+# 記事内容・画像・年齢確認フィルターの精度に十分自信がある場合のみ使用してください。
+WP_POST_STATUS   = os.environ.get('WP_POST_STATUS', 'draft').lower()
 
 ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
 
@@ -63,23 +64,53 @@ if not WP_URL or not WP_USERNAME or not WP_APP_PASSWORD:
     print('❌ 環境変数 WP_URL / WP_USERNAME / WP_APP_PASSWORD が設定されていません。')
     sys.exit(1)
 
-if WP_POST_STATUS not in ('draft', 'pending'):
-    print(f'⚠️ WP_POST_STATUS="{WP_POST_STATUS}" は安全のため許可されていません。'
-          f' draft か pending のみ使用できます。draft にフォールバックします。')
+if WP_POST_STATUS not in ('draft', 'pending', 'publish'):
+    print(f'⚠️ WP_POST_STATUS="{WP_POST_STATUS}" は不明な値です。'
+          f' draft / pending / publish のいずれかを指定してください。draft にフォールバックします。')
     WP_POST_STATUS = 'draft'
 
 print('✅ 認証情報を読み込みました。')
-print(f'📌 投稿ステータス: {WP_POST_STATUS}（公開は必ず手動で行ってください）')
+if WP_POST_STATUS == 'publish':
+    print('🚨 投稿ステータス: publish（本公開）が指定されています。'
+          '生成された記事は目視確認なしにそのままサイトへ公開されます。')
+else:
+    print(f'📌 投稿ステータス: {WP_POST_STATUS}（公開は必ず手動で行ってください）')
 
 DMM_API_BASE = 'https://api.dmm.com/affiliate/v3'
 
-# 同人フロア固定（このツールはFANZA同人紹介専用）
-SERVICE = 'doujin'
-FLOOR   = 'digital_doujin'
+# コンテンツ種別（同人 / AV）を選択。CONTENT_TYPE環境変数で切り替え可能。
+#   doujin : FANZA同人（デフォルト）
+#   av     : FANZA動画（アダルトビデオ）
+CONTENT_TYPE = os.environ.get('CONTENT_TYPE', 'doujin').strip().lower()
+_CONTENT_TYPE_TARGETS = {
+    'doujin': {'service': 'doujin', 'floor': 'digital_doujin', 'label': 'FANZA同人'},
+    'av':     {'service': 'digital', 'floor': 'videoa', 'label': 'FANZA動画'},
+}
+if CONTENT_TYPE not in _CONTENT_TYPE_TARGETS:
+    print(f'⚠️ CONTENT_TYPE="{CONTENT_TYPE}" は不明な値です。doujin にフォールバックします。')
+    CONTENT_TYPE = 'doujin'
+SERVICE       = _CONTENT_TYPE_TARGETS[CONTENT_TYPE]['service']
+FLOOR         = _CONTENT_TYPE_TARGETS[CONTENT_TYPE]['floor']
+CONTENT_LABEL = _CONTENT_TYPE_TARGETS[CONTENT_TYPE]['label']
+print(f'📌 コンテンツ種別: {CONTENT_LABEL}（service={SERVICE}, floor={FLOOR}）')
 
 DMM_SORT_MODE = os.environ.get('DMM_SORT_MODE', 'rank').lower()
 SORT_TARGETS = {'date': '-date', 'rank': '-rank'}
 SORT_KEY = SORT_TARGETS.get(DMM_SORT_MODE, '-rank')
+
+# 価格フィルタ（円）。未設定なら制限なし。price_numが取得できない商品は対象外にはしない。
+def _parse_price_env(name: str):
+    raw = os.environ.get(name, '').strip()
+    if raw.isdigit():
+        return int(raw)
+    return None
+
+PRICE_MIN = _parse_price_env('PRICE_MIN')
+PRICE_MAX = _parse_price_env('PRICE_MAX')
+if PRICE_MIN is not None or PRICE_MAX is not None:
+    print(f'📌 価格フィルタ: {PRICE_MIN if PRICE_MIN is not None else "指定なし"}円 〜 '
+          f'{PRICE_MAX if PRICE_MAX is not None else "指定なし"}円')
+
 
 _raw_start = os.environ.get('POST_START_INDEX', '')
 if _raw_start.strip().isdigit():
@@ -230,12 +261,12 @@ def _get_article_body_from_api(product: dict) -> dict:
         else '不明'
     )
     prompt = (
-        "FANZA同人（成人向け）作品を紹介するブログ記事の本文材料を作成してください。\n"
+        f"{CONTENT_LABEL}（成人向け）作品を紹介するブログ記事の本文材料を作成してください。\n"
         "読み手がクスッと笑いながら読み進め、最後には『これは買うしかない』と\n"
         "思ってしまうような、ユーモアたっぷりで購買意欲を刺激する文章を書いてください。\n\n"
         f"作品名: {product['title']}\n"
         f"ジャンル: {genre_str}\n"
-        f"サークル: {product.get('maker') or '不明'}\n"
+        f"{'サークル' if CONTENT_TYPE == 'doujin' else 'メーカー/レーベル'}: {product.get('maker') or '不明'}\n"
         f"価格: {product.get('price') or '不明'}\n"
         f"レビュー: {review_str}\n\n"
         "条件:\n"
@@ -523,7 +554,7 @@ def build_article(product: dict) -> dict:
         'slug':              _make_slug(product.get('content_id', ''), product['title']),
         'excerpt':           excerpt,
         'body':              body_html,
-        'categories':        genre_categories + ['FANZA同人', 'PR'],
+        'categories':        genre_categories + [CONTENT_LABEL, 'PR'],
         'genre_categories':  genre_categories,
         'featured_image_url': product.get('package_image', ''),
         'content_id':        product.get('content_id', ''),
@@ -624,11 +655,11 @@ def _upload_featured_image(image_url: str, content_id: str):
 def post_draft_to_wordpress(article: dict) -> bool:
     endpoint = f'{WP_URL}/wp-json/wp/v2/posts'
 
-    # カテゴリーは「FANZA同人」に加えて、上位ジャンル（最大2件）もカテゴリーとして
+    # カテゴリーは種別ラベル（FANZA同人 / FANZA動画）に加えて、上位ジャンル（最大2件）もカテゴリーとして
     # 登録する（ジャンル別に記事一覧を辿れるようにし、サイト内回遊性を上げるため）。
     # ジャンル名は従来どおりタグにも登録し、細かい検索性も維持する。
     category_ids = []
-    base_category_id = _get_or_create_term('categories', 'FANZA同人', _category_cache)
+    base_category_id = _get_or_create_term('categories', CONTENT_LABEL, _category_cache)
     if base_category_id:
         category_ids.append(base_category_id)
     for genre_name in article.get('genre_categories', [])[:2]:
@@ -638,7 +669,7 @@ def post_draft_to_wordpress(article: dict) -> bool:
 
     tag_ids = []
     for genre_name in article['categories']:
-        if genre_name in ('FANZA同人', 'PR'):
+        if genre_name in (CONTENT_LABEL, 'PR'):
             continue
         tid = _get_or_create_term('tags', genre_name, _tag_cache)
         if tid:
@@ -722,6 +753,12 @@ def main():
             ok, matched = is_safe(product)
             if not ok:
                 all_skipped.append((product, matched))
+                continue
+
+            price_num = product.get('price_num')
+            if PRICE_MIN is not None and (price_num is None or price_num < PRICE_MIN):
+                continue
+            if PRICE_MAX is not None and (price_num is None or price_num > PRICE_MAX):
                 continue
 
             seen_in_run.add(key)
