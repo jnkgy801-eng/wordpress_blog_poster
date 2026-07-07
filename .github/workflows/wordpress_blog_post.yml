@@ -1,4 +1,4 @@
-name: FANZA同人 → WordPress 下書き生成（1日2回）
+name: FANZA 同人/動画 → WordPress 自動投稿（1日2回）
 
 on:
   schedule:
@@ -6,6 +6,14 @@ on:
     - cron: '0 0,12 * * *'
   workflow_dispatch:
     inputs:
+      content_type:
+        description: 'コンテンツ種別'
+        required: false
+        default: 'doujin'
+        type: choice
+        options:
+          - doujin  # FANZA同人
+          - av      # FANZA動画（AV）
       dmm_sort_mode:
         description: 'ソートモード'
         required: false
@@ -14,11 +22,30 @@ on:
         options:
           - rank   # 人気順
           - date   # 新着順
+      price_min:
+        description: '価格下限（円・空欄で制限なし）'
+        required: false
+        default: ''
+        type: string
+      price_max:
+        description: '価格上限（円・空欄で制限なし）'
+        required: false
+        default: ''
+        type: string
       max_articles:
-        description: '1回の実行で下書き投稿する記事数の上限'
+        description: '1回の実行で投稿する記事数の上限'
         required: false
         default: '5'
         type: string
+      wp_post_status:
+        description: '投稿ステータス（publishは目視確認なしで即公開されるため要注意）'
+        required: false
+        default: 'draft'
+        type: choice
+        options:
+          - draft    # 下書き（推奨）
+          - pending  # 承認待ち
+          - publish  # 本公開（自動で即公開・要注意）
 
 concurrency:
   # 前回の実行が長引いていても、次のcronと重複起動しないようにする
@@ -43,14 +70,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: WordPressへ下書き投稿（rank上位・重複除外・5件になるまで検索）
+      - name: WordPressへ投稿（rank上位・重複除外・件数になるまで検索）
         env:
           DMM_API_ID:        ${{ secrets.DMM_API_ID }}
           DMM_AFFILIATE_ID:  ${{ secrets.DMM_AFFILIATE_ID }}
           WP_URL:            ${{ secrets.WP_URL }}
           WP_USERNAME:       ${{ secrets.WP_USERNAME }}
           WP_APP_PASSWORD:   ${{ secrets.WP_APP_PASSWORD }}
-          WP_POST_STATUS:    draft
+          # スケジュール実行（cron）時は github.event.inputs が空になるため、
+          # 必ず安全側のdefault（draft / doujin / 価格制限なし）にフォールバックする。
+          WP_POST_STATUS:    ${{ github.event.inputs.wp_post_status || 'draft' }}
+          CONTENT_TYPE:      ${{ github.event.inputs.content_type || 'doujin' }}
+          PRICE_MIN:         ${{ github.event.inputs.price_min || '' }}
+          PRICE_MAX:         ${{ github.event.inputs.price_max || '' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           DMM_SORT_MODE:     ${{ github.event.inputs.dmm_sort_mode || 'rank' }}
           MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '5' }}
