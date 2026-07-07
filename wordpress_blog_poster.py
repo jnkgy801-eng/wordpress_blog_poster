@@ -497,6 +497,7 @@ def build_article(product: dict) -> dict:
         'body':              body_html,
         'categories':        genre_categories + ['FANZA同人', 'PR'],
         'featured_image_url': product.get('package_image', ''),
+        'content_id':        product.get('content_id', ''),
     }
 
 
@@ -556,18 +557,20 @@ def _get_or_create_term(taxonomy: str, name: str, cache: dict):
         return None
 
 
-def _upload_featured_image(image_url: str, title: str):
+def _upload_featured_image(image_url: str, content_id: str):
     """パッケージ画像をWordPressメディアライブラリにアップロードし、attachment IDを返す。"""
     if not image_url:
         return None
     try:
         import mimetypes
-        import re as _re
         img_resp = requests.get(image_url, timeout=20)
         img_resp.raise_for_status()
         content_type = img_resp.headers.get('Content-Type', 'image/jpeg').split(';')[0].strip()
         ext = mimetypes.guess_extension(content_type) or '.jpg'
-        filename = _re.sub(r'[^\w\-]+', '_', title)[:60] + ext
+        # HTTPヘッダーはASCII(latin-1)のみ許容されるため、日本語タイトルではなく
+        # content_id（英数字）ベースのファイル名にする
+        safe_id = (content_id or 'item').replace(' ', '_')
+        filename = f'featured-{safe_id}{ext}'
 
         resp = requests.post(
             f'{WP_URL}/wp-json/wp/v2/media',
@@ -614,7 +617,7 @@ def post_draft_to_wordpress(article: dict) -> bool:
         'tags':       tag_ids,
     }
 
-    media_id = _upload_featured_image(article.get('featured_image_url', ''), article['title'])
+    media_id = _upload_featured_image(article.get('featured_image_url', ''), article.get('content_id', ''))
     if media_id:
         payload['featured_media'] = media_id
 

@@ -68,14 +68,16 @@ def extract_first_image_url(html_content: str):
     return m.group(1) if m else None
 
 
-def upload_image_to_media(image_url: str, title: str):
+def upload_image_to_media(image_url: str, title: str, post_id: int):
     """外部画像URLをダウンロードし、WordPressメディアライブラリにアップロードする。"""
     try:
         img_resp = requests.get(image_url, timeout=20)
         img_resp.raise_for_status()
         content_type = img_resp.headers.get('Content-Type', 'image/jpeg').split(';')[0].strip()
         ext = mimetypes.guess_extension(content_type) or '.jpg'
-        filename = re.sub(r'[^\w\-]+', '_', title)[:60] + ext
+        # HTTPヘッダーはASCII(latin-1)のみ許容されるため、日本語タイトルではなく
+        # 投稿IDベースの英数字のみのファイル名にする
+        filename = f'featured-{post_id}{ext}'
 
         resp = requests.post(
             f'{WP_URL}/wp-json/wp/v2/media',
@@ -132,7 +134,7 @@ def main():
             continue
 
         print(f'🖼️ 処理中: {title[:40]}')
-        media_id = upload_image_to_media(image_url, title)
+        media_id = upload_image_to_media(image_url, title, post_id)
         if not media_id:
             failed += 1
             continue
