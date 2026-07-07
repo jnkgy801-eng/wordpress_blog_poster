@@ -1,0 +1,64 @@
+name: FANZA同人 → WordPress 下書き生成（1日2回）
+
+on:
+  schedule:
+    # UTC 0:00 と 12:00（日本時間 9:00 と 21:00 頃）に実行。1日2回。
+    - cron: '0 0,12 * * *'
+  workflow_dispatch:
+    inputs:
+      dmm_sort_mode:
+        description: 'ソートモード'
+        required: false
+        default: 'rank'
+        type: choice
+        options:
+          - rank   # 人気順
+          - date   # 新着順
+      max_articles:
+        description: '1回の実行で下書き投稿する記事数の上限'
+        required: false
+        default: '5'
+        type: string
+
+concurrency:
+  # 前回の実行が長引いていても、次のcronと重複起動しないようにする
+  group: wordpress-blog-post
+  cancel-in-progress: false
+
+jobs:
+  post-drafts:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v3
+
+      - name: Pythonのセットアップ
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 依存ライブラリのインストール
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: WordPressへ下書き投稿（rank上位・重複除外・5件になるまで検索）
+        env:
+          DMM_API_ID:        ${{ secrets.DMM_API_ID }}
+          DMM_AFFILIATE_ID:  ${{ secrets.DMM_AFFILIATE_ID }}
+          WP_URL:            ${{ secrets.WP_URL }}
+          WP_USERNAME:       ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD:   ${{ secrets.WP_APP_PASSWORD }}
+          WP_POST_STATUS:    draft
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DMM_SORT_MODE:     ${{ github.event.inputs.dmm_sort_mode || 'rank' }}
+          MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '5' }}
+        run: python wordpress_blog_poster.py
+
+      - name: 投稿履歴・除外ログをリポジトリにコミット
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add outputs/
+          git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 WordPress自動投稿 履歴更新 ($(date +'%Y-%m-%d %H:%M:%S'))" && git push)
