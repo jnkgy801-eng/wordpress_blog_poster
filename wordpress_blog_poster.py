@@ -595,10 +595,17 @@ def _get_or_create_term(taxonomy: str, name: str, cache: dict):
             auth=_wp_auth(), headers=_JSON_HEADERS, timeout=15,
         )
         if resp.status_code == 200:
-            for term in resp.json():
-                if term.get('name') == name:
-                    cache[name] = term['id']
-                    return term['id']
+            try:
+                results = resp.json()
+            except ValueError:
+                results = None
+            # 想定外のレスポンス形状（文字列やdictなど）はスキップして作成処理へ進む。
+            # search語に完全一致するタームだけを既存として扱う（前方一致等の誤爆を避けるため）。
+            if isinstance(results, list):
+                for term in results:
+                    if isinstance(term, dict) and term.get('name') == name:
+                        cache[name] = term['id']
+                        return term['id']
 
         # 無ければ新規作成
         resp = requests.post(
@@ -606,12 +613,32 @@ def _get_or_create_term(taxonomy: str, name: str, cache: dict):
             auth=_wp_auth(), headers=_JSON_HEADERS, timeout=15,
         )
         if resp.status_code in (200, 201):
-            term_id = resp.json()['id']
-            cache[name] = term_id
-            return term_id
-        else:
-            print(f'    ⚠️ タクソノミー"{name}"の作成に失敗 status={resp.status_code}: {resp.text[:200]}')
+            try:
+                created = resp.json()
+            except ValueError:
+                created = None
+            if isinstance(created, dict) and 'id' in created:
+                term_id = created['id']
+                cache[name] = term_id
+                return term_id
+            print(f'    ⚠️ タクソノミー"{name}"の作成レスポンスが想定外の形式です: {resp.text[:200]}')
             return None
+
+        # WordPressは同名タームが既に存在する場合、
+        # status 400 + code:"term_exists" + data.term_id を返す仕様。
+        # 検索でヒットしなかった（例: 全角/半角違いなど）場合はここで既存IDを拾う。
+        try:
+            err = resp.json()
+        except ValueError:
+            err = None
+        if isinstance(err, dict) and err.get('code') == 'term_exists':
+            existing_id = (err.get('data') or {}).get('term_id')
+            if existing_id:
+                cache[name] = existing_id
+                return existing_id
+
+        print(f'    ⚠️ タクソノミー"{name}"の作成に失敗 status={resp.status_code}: {resp.text[:200]}')
+        return None
     except Exception as e:
         print(f'    ⚠️ タクソノミー"{name}"の取得/作成エラー: {e}')
         return None
