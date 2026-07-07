@@ -1,0 +1,36 @@
+name: 【手動】既存記事にアイキャッチ画像を一括設定
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_status:
+        description: '対象にする投稿ステータス（カンマ区切り）'
+        required: false
+        default: 'draft,publish,pending'
+        type: string
+
+jobs:
+  backfill-featured-images:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v3
+
+      - name: Pythonのセットアップ
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 依存ライブラリのインストール
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: 既存記事にアイキャッチ画像を一括設定
+        env:
+          WP_URL:          ${{ secrets.WP_URL }}
+          WP_USERNAME:     ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          TARGET_STATUS:   ${{ github.event.inputs.target_status || 'draft,publish,pending' }}
+        run: python bulk_set_featured_images.py
