@@ -1,9 +1,9 @@
-name: FANZA 同人/動画 → WordPress 自動投稿（1日2回）
+name: FANZA 同人/動画 → WordPress 自動投稿（6時間おき）
 
 on:
   schedule:
-    # UTC 0:00 と 12:00（日本時間 9:00 と 21:00 頃）に実行。1日2回。
-    - cron: '0 0,12 * * *'
+    # UTC 0:00 / 6:00 / 12:00 / 18:00（日本時間 9:00 / 15:00 / 21:00 / 3:00 頃）に実行。6時間おき・1日4回。
+    - cron: '0 0,6,12,18 * * *'
   workflow_dispatch:
     inputs:
       content_type:
@@ -40,12 +40,12 @@ on:
       wp_post_status:
         description: '投稿ステータス（publishは目視確認なしで即公開されるため要注意）'
         required: false
-        default: 'draft'
+        default: 'publish'
         type: choice
         options:
-          - draft    # 下書き（推奨）
+          - publish  # 本公開（自動で即公開・デフォルト）
+          - draft    # 下書き
           - pending  # 承認待ち
-          - publish  # 本公開（自動で即公開・要注意）
 
 concurrency:
   # 前回の実行が長引いていても、次のcronと重複起動しないようにする
@@ -78,8 +78,8 @@ jobs:
           WP_USERNAME:       ${{ secrets.WP_USERNAME }}
           WP_APP_PASSWORD:   ${{ secrets.WP_APP_PASSWORD }}
           # スケジュール実行（cron）時は github.event.inputs が空になるため、
-          # 必ず安全側のdefault（draft / doujin / 価格制限なし）にフォールバックする。
-          WP_POST_STATUS:    ${{ github.event.inputs.wp_post_status || 'draft' }}
+          # その場合のデフォルトをここで指定する（現在: publish = 自動で即公開）。
+          WP_POST_STATUS:    ${{ github.event.inputs.wp_post_status || 'publish' }}
           CONTENT_TYPE:      ${{ github.event.inputs.content_type || 'doujin' }}
           PRICE_MIN:         ${{ github.event.inputs.price_min || '' }}
           PRICE_MAX:         ${{ github.event.inputs.price_max || '' }}
