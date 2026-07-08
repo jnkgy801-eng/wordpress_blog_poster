@@ -111,6 +111,24 @@ if PRICE_MIN is not None or PRICE_MAX is not None:
     print(f'📌 価格フィルタ: {PRICE_MIN if PRICE_MIN is not None else "指定なし"}円 〜 '
           f'{PRICE_MAX if PRICE_MAX is not None else "指定なし"}円')
 
+# AVでVRコンテンツを除外するかどうか。デフォルトは除外（True）。
+# EXCLUDE_VR=false を指定すれば無効化できる（doujinの場合は元々関係なし）。
+EXCLUDE_VR = os.environ.get('EXCLUDE_VR', 'true').strip().lower() not in ('false', '0', 'no')
+if CONTENT_TYPE == 'av':
+    print(f'📌 VR作品の除外: {"する" if EXCLUDE_VR else "しない"}')
+
+
+def _is_vr_product(product: dict) -> bool:
+    """ジャンル名・タイトルにVRを示すキーワードが含まれる作品かどうかを判定する。"""
+    vr_keywords = ('VR', 'ＶＲ')
+    for genre in product.get('genres', []) or []:
+        if any(kw in genre for kw in vr_keywords):
+            return True
+    title = product.get('title', '') or ''
+    if any(kw in title for kw in vr_keywords):
+        return True
+    return False
+
 
 _raw_start = os.environ.get('POST_START_INDEX', '')
 if _raw_start.strip().isdigit():
@@ -786,6 +804,9 @@ def main():
             if PRICE_MIN is not None and (price_num is None or price_num < PRICE_MIN):
                 continue
             if PRICE_MAX is not None and (price_num is None or price_num > PRICE_MAX):
+                continue
+
+            if CONTENT_TYPE == 'av' and EXCLUDE_VR and _is_vr_product(product):
                 continue
 
             seen_in_run.add(key)
