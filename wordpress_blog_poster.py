@@ -714,9 +714,14 @@ def post_draft_to_wordpress(article: dict) -> bool:
         'tags':       tag_ids,
     }
 
-    media_id = _upload_featured_image(article.get('featured_image_url', ''), article.get('content_id', ''))
-    if media_id:
-        payload['featured_media'] = media_id
+    # 本文の先頭にすでに同じパッケージ画像を埋め込んでいるため、
+    # アイキャッチ画像（featured_media）は設定しない。
+    # （設定すると一覧・アーカイブページの上部にも同じ画像が表示され、
+    #   二重表示や余白の原因になるため）
+    # 従来の挙動に戻したい場合は、下記2行のコメントを外してください。
+    # media_id = _upload_featured_image(article.get('featured_image_url', ''), article.get('content_id', ''))
+    # if media_id:
+    #     payload['featured_media'] = media_id
 
     try:
         resp = requests.post(
