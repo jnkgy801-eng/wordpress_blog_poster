@@ -484,17 +484,6 @@ def build_article(product: dict) -> dict:
             + ' ／ '.join(meta_line_parts) + '</div>'
         )
 
-    image_html = ''
-    if product.get('package_image'):
-        img_url = escape(product['package_image'])
-        image_html = (
-            f'<a href="{escape(product["affiliate_url"])}" target="_blank" rel="nofollow">'
-            f'<img src="{img_url}" alt="{escape(product["title"])}" loading="lazy" '
-            'style="width:100%;max-width:560px;height:auto;border-radius:10px;'
-            'display:block;margin:0 auto 16px;box-shadow:0 2px 10px rgba(0,0,0,0.12);">'
-            '</a>'
-        )
-
     price_badge_html = ''
     if product.get('price'):
         price_badge_html = (
@@ -525,7 +514,6 @@ def build_article(product: dict) -> dict:
 
     card_inner = '\n'.join(
         part for part in [
-            image_html,
             f'<h3 style="margin:0 0 6px;font-size:20px;line-height:1.4;">{escape(product["title"])}</h3>',
             meta_line_html,
             genre_badges_html,
@@ -714,14 +702,11 @@ def post_draft_to_wordpress(article: dict) -> bool:
         'tags':       tag_ids,
     }
 
-    # 本文の先頭にすでに同じパッケージ画像を埋め込んでいるため、
-    # アイキャッチ画像（featured_media）は設定しない。
-    # （設定すると一覧・アーカイブページの上部にも同じ画像が表示され、
-    #   二重表示や余白の原因になるため）
-    # 従来の挙動に戻したい場合は、下記2行のコメントを外してください。
-    # media_id = _upload_featured_image(article.get('featured_image_url', ''), article.get('content_id', ''))
-    # if media_id:
-    #     payload['featured_media'] = media_id
+    # アイキャッチ画像（featured_media）を設定する。
+    # 本文側からは同じ画像を削除したので、重複表示にはならない。
+    media_id = _upload_featured_image(article.get('featured_image_url', ''), article.get('content_id', ''))
+    if media_id:
+        payload['featured_media'] = media_id
 
     try:
         resp = requests.post(
@@ -729,7 +714,18 @@ def post_draft_to_wordpress(article: dict) -> bool:
             auth=_wp_auth(), headers=_JSON_HEADERS, timeout=20,
         )
         if resp.status_code in (200, 201):
-            result = resp.json()
+            try:
+                result = resp.json()
+            except ValueError:
+                result = None
+            # レンタルサーバーのbot対策（Imunify360等）にブロックされた場合、
+            # HTTPステータスは200/201でも本文が {"message": "..."} のような
+            # エラーメッセージだけのことがある。実際に投稿されたことを保証するため、
+            # 本物のWordPress投稿レスポンス（'id'キーを持つdict）かどうかを確認する。
+            if not isinstance(result, dict) or 'id' not in result:
+                print(f"    ❌ 投稿失敗：WordPressから投稿データが返りませんでした"
+                      f"（サーバー側のbot対策等でブロックされた可能性があります）: {resp.text[:300]}")
+                return False
             actual_status = result.get('status')
             # WordPressから返ってきたステータスが、こちらが指定したWP_POST_STATUSと
             # 一致しているかどうかだけを確認する（想定外の値が返った場合のみ警告）。
