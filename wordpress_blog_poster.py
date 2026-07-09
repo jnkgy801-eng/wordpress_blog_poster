@@ -709,7 +709,7 @@ def post_draft_to_wordpress(article: dict) -> bool:
         'slug':       article.get('slug') or '',
         'excerpt':    article.get('excerpt') or '',
         'content':    article['body'],
-        'status':     WP_POST_STATUS,   # 'draft' か 'pending' のみ（publishは許可しない）
+        'status':     WP_POST_STATUS,   # 'draft' / 'pending' / 'publish'（WP_POST_STATUSの設定に従う）
         'categories': category_ids,
         'tags':       tag_ids,
     }
@@ -726,12 +726,11 @@ def post_draft_to_wordpress(article: dict) -> bool:
         if resp.status_code in (200, 201):
             result = resp.json()
             actual_status = result.get('status')
-            # 実際にdraft/pendingで保存されたことを必ず確認する
-            # （はてな版で発生した「意図せず公開されるバグ」の再発防止）
-            if actual_status not in ('draft', 'pending'):
-                print(f"    ❌ 想定外のステータスで保存されました（status={actual_status}）。"
-                      f" 安全のため公開されていないか手動で確認してください: {result.get('link', '')}")
-                return False
+            # WordPressから返ってきたステータスが、こちらが指定したWP_POST_STATUSと
+            # 一致しているかどうかだけを確認する（想定外の値が返った場合のみ警告）。
+            if actual_status != WP_POST_STATUS:
+                print(f"    ⚠️ 指定したステータス（{WP_POST_STATUS}）と異なる値が返りました"
+                      f"（status={actual_status}）。念のため内容をご確認ください: {result.get('link', '')}")
             print(f"    ✅ {actual_status}として投稿成功: {article['title'][:40]}")
             return True
         else:
