@@ -183,9 +183,23 @@ def fetch_dmm_products(offset: int):
         return []
 
 
+_TITLE_PREFIX_RE = re.compile(r'^【[^】]{1,20}】\s*')
+
+
+def _strip_redundant_title_prefix(title: str) -> str:
+    """DMMの商品タイトルは【ハイビジョン・独占配信・巨乳】のような接頭辞の直後に、
+    同じキーワードを読点区切りでそのまま繰り返す形式が多い。
+    一覧表示で全作品のタイトルが同じ書き出しに見えてしまう原因になるため、
+    この冒頭の【...】タグ部分だけを取り除く（ジャンル情報はバッジ/カテゴリーで別途表示されるため
+    情報は失われない）。"""
+    if not title:
+        return title
+    return _TITLE_PREFIX_RE.sub('', title, count=1).strip()
+
+
 def parse_product(item):
     content_id    = item.get('content_id', '') or item.get('product_id', '')
-    title         = item.get('title', '')
+    title         = _strip_redundant_title_prefix(item.get('title', ''))
     affiliate_url = item.get('affiliateURL', '') or item.get('URL', '')
     prices        = item.get('prices', {})
     price_str, price_num = '', None
@@ -452,20 +466,20 @@ def _make_slug(content_id: str, title: str) -> str:
     return fallback[:60] or 'item'
 
 
-def _make_excerpt(overview_text: str, genres: list, max_len: int = 90) -> str:
-    """検索結果に表示されるメタディスクリプション用の抜粋文（プレーンテキスト、HTMLタグなし）。"""
-    genre_str = '・'.join(genres[:3]) if genres else ''
-    plain = re.sub(r'\s+', ' ', overview_text).strip()
-    prefix = f'【{genre_str}】' if genre_str else ''
-    text = f'{prefix}{plain}'
-    if len(text) > max_len:
-        text = text[:max_len - 1].rstrip() + '…'
-    return text
+def _make_excerpt(title: str, max_len: int = 90) -> str:
+    """アーカイブページ等で画像の下に表示される抜粋文（プレーンテキスト、HTMLタグなし）。
+    以前はジャンル接頭辞＋概要文を独自に組み立てていたが、
+    それぞれが同じジャンル名を繰り返してしまい一覧が全部同じ書き出しに見える原因になっていたため、
+    シンプルに作品タイトルをそのまま抜粋として使う。"""
+    plain = re.sub(r'\s+', ' ', title or '').strip()
+    if len(plain) > max_len:
+        plain = plain[:max_len - 1].rstrip() + '…'
+    return plain
 
 
 def build_article(product: dict) -> dict:
     body_content = get_article_body_ai(product)
-    excerpt = _make_excerpt(body_content['overview'], product.get('genres', []))
+    excerpt = _make_excerpt(product['title'])
     overview_html = _paragraphs_to_html(body_content['overview'])
     points_html = _points_list_html(body_content['points'])
     genre_badges_html = _genre_badges_html(product.get('genres', []))
