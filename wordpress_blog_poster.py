@@ -351,7 +351,8 @@ _OVERVIEW_CLOSERS = [
 
 def _get_article_body_template(product: dict) -> dict:
     genre_str = '、'.join(product['genres'][:5]) if product['genres'] else '不明'
-    overview = f"{genre_str}系の同人作品です。"
+    work_kind = '同人作品' if CONTENT_TYPE == 'doujin' else 'AV作品'
+    overview = f"{genre_str}系の{work_kind}です。"
     if product.get('maker'):
         overview += f" 手がけるのは{product['maker']}。"
     closer = _OVERVIEW_CLOSERS_PICK(product)
