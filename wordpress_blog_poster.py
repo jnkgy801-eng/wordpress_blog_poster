@@ -421,35 +421,31 @@ def _points_list_html(points: list) -> str:
     if not points:
         return ''
     items = ''.join(
-        f'<li style="margin:6px 0;line-height:1.6;color:#333;">{escape(pt)}</li>'
+        f'<li style="margin:6px 0;line-height:1.6;">{escape(pt)}</li>'
         for pt in points
     )
     return (
-        '<div style="background:#fef6f8;border-left:4px solid #e0507a;border-radius:8px;'
-        'padding:12px 16px;margin:14px 0;">'
-        '<div style="font-weight:bold;color:#e0507a;margin-bottom:6px;">✓ ここがポイント</div>'
+        '<div class="ona-points-box">'
+        '<div class="ona-points-title">✓ ここがポイント</div>'
         f'<ul style="margin:0;padding-left:20px;">{items}</ul>'
         '</div>'
     )
 
 
 def _sample_gallery_html(affiliate_url: str, sample_images: list, title: str) -> str:
-    imgs = [u for u in (sample_images or []) if u][:4]
+    imgs = [u for u in (sample_images or []) if u][:8]
     if not imgs:
         return ''
     cells = []
     for url in imgs:
         cells.append(
-            f'<a href="{escape(affiliate_url)}" target="_blank" rel="nofollow" '
-            'style="flex:1 1 45%;min-width:120px;">'
-            f'<img src="{escape(url)}" alt="{escape(title)} サンプル画像" loading="lazy" '
-            'style="width:100%;height:auto;border-radius:8px;display:block;'
-            'box-shadow:0 1px 6px rgba(0,0,0,0.1);"></a>'
+            f'<a href="{escape(affiliate_url)}" target="_blank" rel="nofollow" class="ona-sample-cell">'
+            f'<img src="{escape(url)}" alt="{escape(title)} サンプル画像" loading="lazy" class="ona-sample-img"></a>'
         )
     return (
-        '<div style="margin:16px 0;">'
-        '<div style="font-weight:bold;color:#555;margin-bottom:8px;font-size:14px;">作品サンプル</div>'
-        '<div style="display:flex;flex-wrap:wrap;gap:8px;">' + ''.join(cells) + '</div>'
+        '<div class="ona-sample-gallery">'
+        '<div class="ona-sample-gallery-title">作品サンプル</div>'
+        '<div class="ona-sample-grid">' + ''.join(cells) + '</div>'
         '</div>'
     )
 
