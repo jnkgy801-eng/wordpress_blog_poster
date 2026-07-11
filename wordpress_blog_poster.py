@@ -17,7 +17,7 @@ import requests
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from age_safety_filter import is_safe, find_matched_keywords
+from age_safety_filter import is_safe
 
 # ================================================================
 # ⚙️ 設定（環境変数から読み込み）
@@ -223,7 +223,6 @@ def parse_product(item):
     review_avg   = round(review_avg, 2) if review_avg else None
     review_count = review_count if review_count else None
 
-    package_image = ''
     img = item.get('imageURL', {}) or {}
     package_image = img.get('large') or img.get('small') or ''
 
@@ -525,7 +524,6 @@ def build_article(product: dict) -> dict:
 
     card_inner = '\n'.join(
         part for part in [
-            f'<h3 style="margin:0 0 6px;font-size:20px;line-height:1.4;">{escape(product["title"])}</h3>',
             meta_line_html,
             genre_badges_html,
             star_html,
