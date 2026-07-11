@@ -76,8 +76,8 @@ CONTENT_LABEL = _CONTENT_TYPE_TARGETS[CONTENT_TYPE]['label']
 print(f'📌 コンテンツ種別: {CONTENT_LABEL}（service={SERVICE}, floor={FLOOR}）')
 
 DMM_SORT_MODE = os.environ.get('DMM_SORT_MODE', 'rank').lower()
-SORT_TARGETS = {'date': '-date', 'rank': '-rank'}
-SORT_KEY = SORT_TARGETS.get(DMM_SORT_MODE, '-rank')
+SORT_TARGETS = {'date': 'date', 'rank': 'rank'}
+SORT_KEY = SORT_TARGETS.get(DMM_SORT_MODE, 'rank')
 
 # 価格フィルタ（円）。未設定なら制限なし。price_numが取得できない商品は対象外にはしない。
 def _parse_price_env(name: str):
