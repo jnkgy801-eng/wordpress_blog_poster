@@ -249,6 +249,7 @@ def parse_product(item):
         'review_count':  review_count,
         'package_image': package_image,
         'sample_images': sample_images,
+        'date':          item.get('date', ''),
     }
 
 
@@ -755,6 +756,23 @@ def post_draft_to_wordpress(article: dict) -> bool:
 # 🚀 メイン実行
 # ================================================================
 
+JST = datetime.timezone(datetime.timedelta(hours=9))
+
+
+def _parse_dmm_date(date_str):
+    """DMMの date フィールド（例: 'YYYY-MM-DD HH:MM:SS'）をdatetimeに変換する。
+    パースできない・空の場合はNoneを返す。"""
+    if not date_str:
+        return None
+    date_str = date_str.strip()
+    for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d'):
+        try:
+            return datetime.datetime.strptime(date_str, fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def main():
     posted_history = load_posted_history()
     print(f'📚 投稿済み履歴: {len(posted_history)}件')
@@ -788,6 +806,13 @@ def main():
             ok, matched = is_safe(product)
             if not ok:
                 all_skipped.append((product, matched))
+                continue
+
+            # 【追加】配信日が投稿当日（JST）より未来の商品は、まだ配信されていない
+            # （予約掲載）扱いとして今回は投稿しない。次回以降、当日以降の実行で
+            # 対象日になれば通常通り投稿対象になる。
+            product_date = _parse_dmm_date(product.get('date', ''))
+            if product_date and product_date.date() > datetime.datetime.now(JST).date():
                 continue
 
             price_num = product.get('price_num')
