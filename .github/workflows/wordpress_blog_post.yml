@@ -1,23 +1,24 @@
-name: FANZA 同人/動画 → WordPress 自動投稿（6時間おき）
+name: FANZA 同人/動画 → WordPress 自動投稿（3時間おき・AV/同人 各10件・date順）
 
 on:
   schedule:
-    # UTC 0:00 / 6:00 / 12:00 / 18:00（日本時間 9:00 / 15:00 / 21:00 / 3:00 頃）に実行。6時間おき・1日4回。
-    - cron: '0 0,6,12,18 * * *'
+    # 3時間おき（UTC 0,3,6,9,12,15,18,21時 = 日本時間 9,12,15,18,21,0,3,6時）に実行。1日8回。
+    - cron: '0 */3 * * *'
   workflow_dispatch:
     inputs:
       content_type:
-        description: 'コンテンツ種別'
+        description: 'コンテンツ種別（手動実行時のみ選択可。定期実行では両方とも投稿します）'
         required: false
-        default: 'doujin'
+        default: 'both'
         type: choice
         options:
-          - doujin  # FANZA同人
-          - av      # FANZA動画（AV）
+          - both    # AV・同人の両方（定期実行と同じ）
+          - doujin  # FANZA同人のみ
+          - av      # FANZA動画（AV）のみ
       dmm_sort_mode:
         description: 'ソートモード'
         required: false
-        default: 'rank'
+        default: 'date'
         type: choice
         options:
           - rank   # 人気順
@@ -33,9 +34,9 @@ on:
         default: ''
         type: string
       max_articles:
-        description: '1回の実行で投稿する記事数の上限'
+        description: '1回の実行で投稿する記事数の上限（種別ごと）'
         required: false
-        default: '5'
+        default: '10'
         type: string
       wp_post_status:
         description: '投稿ステータス（publishは目視確認なしで即公開されるため要注意）'
@@ -70,7 +71,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: WordPressへ投稿（rank上位・重複除外・件数になるまで検索）
+      - name: WordPressへ投稿（AV・date順・重複除外・10件になるまで検索）
+        if: ${{ github.event.inputs.content_type == '' || github.event.inputs.content_type == 'both' || github.event.inputs.content_type == 'av' }}
         env:
           DMM_API_ID:        ${{ secrets.DMM_API_ID }}
           DMM_AFFILIATE_ID:  ${{ secrets.DMM_AFFILIATE_ID }}
@@ -80,12 +82,29 @@ jobs:
           # スケジュール実行（cron）時は github.event.inputs が空になるため、
           # その場合のデフォルトをここで指定する（現在: publish = 自動で即公開）。
           WP_POST_STATUS:    ${{ github.event.inputs.wp_post_status || 'publish' }}
-          CONTENT_TYPE:      ${{ github.event.inputs.content_type || 'doujin' }}
+          CONTENT_TYPE:      av
           PRICE_MIN:         ${{ github.event.inputs.price_min || '' }}
           PRICE_MAX:         ${{ github.event.inputs.price_max || '' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          DMM_SORT_MODE:     ${{ github.event.inputs.dmm_sort_mode || 'rank' }}
-          MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '5' }}
+          DMM_SORT_MODE:     ${{ github.event.inputs.dmm_sort_mode || 'date' }}
+          MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '10' }}
+        run: python wordpress_blog_poster.py
+
+      - name: WordPressへ投稿（同人・date順・重複除外・10件になるまで検索）
+        if: ${{ github.event.inputs.content_type == '' || github.event.inputs.content_type == 'both' || github.event.inputs.content_type == 'doujin' }}
+        env:
+          DMM_API_ID:        ${{ secrets.DMM_API_ID }}
+          DMM_AFFILIATE_ID:  ${{ secrets.DMM_AFFILIATE_ID }}
+          WP_URL:            ${{ secrets.WP_URL }}
+          WP_USERNAME:       ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD:   ${{ secrets.WP_APP_PASSWORD }}
+          WP_POST_STATUS:    ${{ github.event.inputs.wp_post_status || 'publish' }}
+          CONTENT_TYPE:      doujin
+          PRICE_MIN:         ${{ github.event.inputs.price_min || '' }}
+          PRICE_MAX:         ${{ github.event.inputs.price_max || '' }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          DMM_SORT_MODE:     ${{ github.event.inputs.dmm_sort_mode || 'date' }}
+          MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '10' }}
         run: python wordpress_blog_poster.py
 
       - name: 投稿履歴・除外ログをリポジトリにコミット
