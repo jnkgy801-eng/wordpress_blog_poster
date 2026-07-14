@@ -120,7 +120,11 @@ print(f'📌 取得開始番号: {START_OFFSET}（{SORT_KEY}順）')
 
 FETCH_COUNT = int(os.environ.get('FETCH_COUNT', '100'))
 MAX_ARTICLES = int(os.environ.get('MAX_ARTICLES', '5'))  # 1回の実行で投稿する記事数の上限
-MAX_FETCH_PAGES = int(os.environ.get('MAX_FETCH_PAGES', '10'))
+# 何ページまで検索を続けるかの上限（安全装置）。
+# 既に投稿済み・未来配信日・安全フィルター等で除外され続けても、
+# MAX_ARTICLES件集まるまで（またはDMM側にデータが無くなるまで）検索を続ける。
+# デフォルトは大きめの100ページ（1万件）とし、事実上「見つかるまで検索」に近い動作にしている。
+MAX_FETCH_PAGES = int(os.environ.get('MAX_FETCH_PAGES', '100'))
 
 # 投稿済み作品の重複防止用履歴ファイル
 POSTED_HISTORY_FILE = Path(os.environ.get('POSTED_HISTORY_FILE', 'outputs/posted_history.json'))
@@ -780,6 +784,7 @@ def main():
     safe_products = []
     seen_in_run = set()
     all_skipped = []
+    future_skipped = []
     offset = START_OFFSET
 
     for page in range(1, MAX_FETCH_PAGES + 1):
@@ -813,6 +818,7 @@ def main():
             # 対象日になれば通常通り投稿対象になる。
             product_date = _parse_dmm_date(product.get('date', ''))
             if product_date and product_date.date() > datetime.datetime.now(JST).date():
+                future_skipped.append(product)
                 continue
 
             price_num = product.get('price_num')
@@ -830,7 +836,14 @@ def main():
         offset += FETCH_COUNT
 
     print(f'\n📊 検索結果: {len(safe_products)}/{MAX_ARTICLES}件 集まりました '
-          f'（安全フィルター除外 {len(all_skipped)}件）')
+          f'（安全フィルター除外 {len(all_skipped)}件・配信予定日が未来のため除外 {len(future_skipped)}件）')
+
+    if future_skipped:
+        print('   ⏳ 配信予定日が未来のためスキップ:')
+        for p in future_skipped[:10]:
+            print(f"      - {p['title'][:40]}（配信日: {p.get('date')}）")
+        if len(future_skipped) > 10:
+            print(f'      …他{len(future_skipped) - 10}件')
 
     if all_skipped:
         Path('outputs').mkdir(exist_ok=True)
@@ -852,7 +865,7 @@ def main():
 
     posted = 0
     for p in safe_products:
-        print(f"\n📝 記事生成中: {p['title'][:40]}")
+        print(f"\n📝 記事生成中: {p['title'][:40]}（配信日: {p.get('date') or '不明'}）")
         article = build_article(p)
         if post_draft_to_wordpress(article):
             posted += 1
