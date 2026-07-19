@@ -82,21 +82,29 @@ else:
 
 DMM_API_BASE = 'https://api.dmm.com/affiliate/v3'
 
-# コンテンツ種別（同人 / AV）を選択。CONTENT_TYPE環境変数で切り替え可能。
+# コンテンツ種別（同人 / AV / 両方）を選択。CONTENT_TYPE環境変数で切り替え可能。
 #   doujin : FANZA同人（デフォルト）
 #   av     : FANZA動画（アダルトビデオ）
+#   both   : 同人・AVの両方を順番に処理する
 CONTENT_TYPE = os.environ.get('CONTENT_TYPE', 'doujin').strip().lower()
 _CONTENT_TYPE_TARGETS = {
     'doujin': {'service': 'doujin', 'floor': 'digital_doujin', 'label': 'FANZA同人'},
     'av':     {'service': 'digital', 'floor': 'videoa', 'label': 'FANZA動画'},
 }
-if CONTENT_TYPE not in _CONTENT_TYPE_TARGETS:
+if CONTENT_TYPE not in _CONTENT_TYPE_TARGETS and CONTENT_TYPE != 'both':
     print(f'⚠️ CONTENT_TYPE="{CONTENT_TYPE}" は不明な値です。doujin にフォールバックします。')
     CONTENT_TYPE = 'doujin'
-SERVICE       = _CONTENT_TYPE_TARGETS[CONTENT_TYPE]['service']
-FLOOR         = _CONTENT_TYPE_TARGETS[CONTENT_TYPE]['floor']
-CONTENT_LABEL = _CONTENT_TYPE_TARGETS[CONTENT_TYPE]['label']
-print(f'📌 コンテンツ種別: {CONTENT_LABEL}（service={SERVICE}, floor={FLOOR}）')
+
+if CONTENT_TYPE == 'both':
+    print('📌 コンテンツ種別: 同人・AVの両方を順番に処理します')
+    # SERVICE/FLOOR/CONTENT_LABELは処理対象ごとにmain()内で切り替えるため、ここでは未確定にしておく
+    SERVICE = FLOOR = CONTENT_LABEL = None
+else:
+    SERVICE       = _CONTENT_TYPE_TARGETS[CONTENT_TYPE]['service']
+    FLOOR         = _CONTENT_TYPE_TARGETS[CONTENT_TYPE]['floor']
+    CONTENT_LABEL = _CONTENT_TYPE_TARGETS[CONTENT_TYPE]['label']
+    print(f'📌 コンテンツ種別: {CONTENT_LABEL}（service={SERVICE}, floor={FLOOR}）')
+
 
 DMM_SORT_MODE = os.environ.get('DMM_SORT_MODE', 'rank').lower()
 SORT_TARGETS = {'date': 'date', 'rank': 'rank'}
@@ -960,7 +968,19 @@ def _parse_dmm_date(date_str):
     return None
 
 
-def main():
+def run_for_content_type(content_type: str):
+    """指定したコンテンツ種別（doujin/av）について、取得→フィルター→投稿を1サイクル実行する。
+    both指定時にmain()から2回呼ばれることを想定し、その都度SERVICE/FLOOR/CONTENT_LABEL
+    （他の関数が参照しているモジュールグローバル）をこの種別のものに切り替える。"""
+    global SERVICE, FLOOR, CONTENT_LABEL, CONTENT_TYPE
+    CONTENT_TYPE  = content_type
+    SERVICE       = _CONTENT_TYPE_TARGETS[content_type]['service']
+    FLOOR         = _CONTENT_TYPE_TARGETS[content_type]['floor']
+    CONTENT_LABEL = _CONTENT_TYPE_TARGETS[content_type]['label']
+    print(f'\n{"=" * 60}')
+    print(f'📌 コンテンツ種別: {CONTENT_LABEL}（service={SERVICE}, floor={FLOOR}）')
+    print("=" * 60)
+
     posted_history = load_posted_history()
     print(f'📚 投稿済み履歴: {len(posted_history)}件')
 
@@ -1018,7 +1038,7 @@ def main():
 
         offset += FETCH_COUNT
 
-    print(f'\n📊 検索結果: {len(safe_products)}/{MAX_ARTICLES}件 集まりました '
+    print(f'\n📊 [{CONTENT_LABEL}] 検索結果: {len(safe_products)}/{MAX_ARTICLES}件 集まりました '
           f'（安全フィルター除外 {len(all_skipped)}件・配信予定日が未来のため除外 {len(future_skipped)}件）')
 
     if future_skipped:
@@ -1031,7 +1051,7 @@ def main():
     if all_skipped:
         Path('outputs').mkdir(exist_ok=True)
         ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-        skip_path = Path('outputs') / f'skipped_{ts}.txt'
+        skip_path = Path('outputs') / f'skipped_{content_type}_{ts}.txt'
         with open(skip_path, 'w', encoding='utf-8') as f:
             f.write('# 年少者連想ワードにより除外された作品一覧\n\n')
             for p, matched in all_skipped:
@@ -1039,16 +1059,16 @@ def main():
         print(f'📄 除外ログ: {skip_path}')
 
     if not safe_products:
-        print('⚠️ 投稿対象の作品がありませんでした（フィルター/重複除外で全件除外、または取得0件）。')
-        sys.exit(0)
+        print(f'⚠️ [{CONTENT_LABEL}] 投稿対象の作品がありませんでした（フィルター/重複除外で全件除外、または取得0件）。')
+        return 0
 
     if len(safe_products) < MAX_ARTICLES:
-        print(f'⚠️ {MAX_FETCH_PAGES}ページ検索しましたが{MAX_ARTICLES}件に届きませんでした。'
+        print(f'⚠️ [{CONTENT_LABEL}] {MAX_FETCH_PAGES}ページ検索しましたが{MAX_ARTICLES}件に届きませんでした。'
               f'集まった{len(safe_products)}件のみ投稿します。')
 
     posted = 0
     for p in safe_products:
-        print(f"\n📝 記事生成中: {p['title'][:40]}（配信日: {p.get('date') or '不明'}）")
+        print(f"\n📝 [{CONTENT_LABEL}] 記事生成中: {p['title'][:40]}（配信日: {p.get('date') or '不明'}）")
         article = build_article(p)
         ok, link = post_draft_to_wordpress(article)
         if ok:
@@ -1059,8 +1079,22 @@ def main():
             if AUTO_POST_TO_X and link:
                 post_to_x_via_buffer(p, link)
 
-    print(f'\n✅ 完了！{posted}/{len(safe_products)} 件をWordPressに{WP_POST_STATUS}として投稿しました。')
+    print(f'\n✅ [{CONTENT_LABEL}] 完了！{posted}/{len(safe_products)} 件をWordPressに{WP_POST_STATUS}として投稿しました。')
     print(f'   📚 累計投稿履歴: {len(posted_history)}件（{POSTED_HISTORY_FILE}）')
+    return posted
+
+
+def main():
+    if CONTENT_TYPE == 'both':
+        # 同人・AVの両方を順番に処理する。MAX_ARTICLESは種別ごとに適用される
+        # （例: MAX_ARTICLES=5なら 同人最大5件 + AV最大5件 = 最大10件投稿）。
+        total_posted = 0
+        for ct in ('doujin', 'av'):
+            total_posted += run_for_content_type(ct)
+        print(f'\n🎉 全種別完了！合計 {total_posted} 件をWordPressに{WP_POST_STATUS}として投稿しました。')
+    else:
+        run_for_content_type(CONTENT_TYPE)
+
     print('   ※ 公開前に必ず内容をご確認ください。')
 
 
