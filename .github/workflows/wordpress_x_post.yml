@@ -109,7 +109,7 @@ jobs:
           AUTO_POST_TO_X:    ${{ github.event.inputs.auto_post_to_x || 'true' }}
           BUFFER_API_KEY:    ${{ secrets.BUFFER_API_KEY }}
           BUFFER_CHANNEL_ID: ${{ secrets.BUFFER_CHANNEL_ID }}
-        run: python wordpress_blog_poster.py
+        run: python wordpress_blog_poster_x.py
 
       - name: 投稿済み履歴・除外ログをリポジトリにコミット
         run: |
