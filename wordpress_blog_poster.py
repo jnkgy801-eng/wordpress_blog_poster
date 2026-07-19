@@ -76,14 +76,10 @@ FLOOR         = _CONTENT_TYPE_TARGETS[CONTENT_TYPE]['floor']
 CONTENT_LABEL = _CONTENT_TYPE_TARGETS[CONTENT_TYPE]['label']
 print(f'📌 コンテンツ種別: {CONTENT_LABEL}（service={SERVICE}, floor={FLOOR}）')
 
-DMM_SORT_MODE = os.environ.get('DMM_SORT_MODE', 'rank').lower()
-SORT_TARGETS = {'date': 'date', 'rank': 'rank'}
-SORT_KEY = SORT_TARGETS.get(DMM_SORT_MODE, 'rank')
-
-# date順（新着順）で投稿する際、話題性の低い新着だけが並ぶのを避けるため、
-# rank順（人気順）の上位RANK_TOP_LIMIT件に入っている作品だけを投稿対象にする。
-# 0以下を指定するとこの絞り込みは行わない。
-RANK_TOP_LIMIT = int(os.environ.get('RANK_TOP_LIMIT', '300'))
+RANK_FETCH_LIMIT = int(os.environ.get('RANK_FETCH_LIMIT', '500'))
+DATE_WINDOW_DAYS = int(os.environ.get('DATE_WINDOW_DAYS', '14'))
+print(f'📌 rank順（人気順）上位{RANK_FETCH_LIMIT}件を取得し、'
+      f'発売日/配信日が今日から過去{DATE_WINDOW_DAYS}日以内の作品のみ投稿対象にします。')
 
 # 価格フィルタ（円）。未設定なら制限なし。price_numが取得できない商品は対象外にはしない。
 def _parse_price_env(name: str):
@@ -117,68 +113,8 @@ def _is_vr_product(product: dict) -> bool:
     return False
 
 
-def _parse_item_date(item: dict):
-    """DMM APIの'date'（例: '2026-07-19 00:00:24'）を date型に変換する。パース不能ならNone。"""
-    ds = (item.get('date') or '')[:10]
-    try:
-        return datetime.datetime.strptime(ds, '%Y-%m-%d').date()
-    except Exception:
-        return None
-
-
-def find_today_start_offset(max_hi: int = 20000) -> int:
-    """date順（配信日の新しい順）のリストは、未配信の未来日の作品が先頭に並ぶことがある。
-    毎回offset=1から検索すると、この「未来日ゾーン」を延々スキャンして無駄になるため、
-    二分探索で「今日以前の作品が始まるおおよその位置」を先に特定し、そこから検索を始める。
-    hits=1の軽いリクエストのみを使うため、API呼び出し回数はO(log N)に収まる。
-    見つからない場合は安全のため1を返す（従来通りの先頭からの検索）。"""
-    today = datetime.datetime.now(JST).date()
-
-    def date_at(offset: int):
-        items = fetch_dmm_products(offset, sort='date', hits=1)
-        if not items:
-            return None
-        return _parse_item_date(items[0])
-
-    # offset=1がすでに「今日以前」なら、未来日ゾーン自体が無いので1のまま
-    d1 = date_at(1)
-    if d1 is None:
-        return 1
-    if d1 <= today:
-        return 1
-
-    # hiが「今日以前」になるまで倍々に広げる（未来日ゾーンの終わりを探す）
-    lo, hi = 1, 2
-    d_hi = date_at(hi)
-    while (d_hi is None or d_hi > today) and hi < max_hi:
-        lo = hi
-        hi *= 2
-        d_hi = date_at(hi)
-
-    if d_hi is not None and d_hi > today:
-        # 上限まですべて未来日だった（かなり先の予約作品が大量にある状態）。
-        # 安全のため先頭から検索する従来動作にフォールバックする。
-        print(f'⚠️ offset={max_hi}まで探索しましたが未来日の作品ばかりでした。offset=1から検索します。')
-        return 1
-
-    # lo（未来日）〜hi（今日以前）の間を二分探索して境界を絞り込む
-    while hi - lo > 1:
-        mid = (lo + hi) // 2
-        d_mid = date_at(mid)
-        if d_mid is None or d_mid > today:
-            lo = mid
-        else:
-            hi = mid
-
-    return hi
-
 FETCH_COUNT = int(os.environ.get('FETCH_COUNT', '100'))
 MAX_ARTICLES = int(os.environ.get('MAX_ARTICLES', '5'))  # 1回の実行で投稿する記事数の上限
-# 何ページまで検索を続けるかの上限（安全装置）。
-# 既に投稿済み・未来配信日・安全フィルター等で除外され続けても、
-# MAX_ARTICLES件集まるまで（またはDMM側にデータが無くなるまで）検索を続ける。
-# デフォルトは大きめの100ページ（1万件）とし、事実上「見つかるまで検索」に近い動作にしている。
-MAX_FETCH_PAGES = int(os.environ.get('MAX_FETCH_PAGES', '100'))
 
 # 投稿済み作品の重複防止用履歴ファイル
 POSTED_HISTORY_FILE = Path(os.environ.get('POSTED_HISTORY_FILE', 'outputs/posted_history.json'))
@@ -225,7 +161,7 @@ def fetch_dmm_products(offset: int, sort: str = None, hits: int = None):
         'floor':        FLOOR,
         'hits':         hits or FETCH_COUNT,
         'offset':       offset,
-        'sort':         sort or SORT_KEY,
+        'sort':         sort or 'rank',
         'output':       'json',
     }
     try:
@@ -241,41 +177,20 @@ def fetch_dmm_products(offset: int, sort: str = None, hits: int = None):
         return []
 
 
-_raw_start = os.environ.get('POST_START_INDEX', '')
-if _raw_start.strip().isdigit():
-    START_OFFSET = int(_raw_start.strip())
-    print(f'📌 取得開始番号: {START_OFFSET}（{SORT_KEY}順・手動指定）')
-elif SORT_KEY == 'date':
-    # POST_START_INDEX未指定（＝スケジュール実行等）かつdate順の場合は、
-    # 未来配信日の作品ゾーンを自動でスキップした位置から検索を始める。
-    print('📌 取得開始番号が未指定のため、date順の「今日以前」開始位置を自動探索します...')
-    START_OFFSET = find_today_start_offset()
-    print(f'📌 取得開始番号: {START_OFFSET}（date順・自動探索）')
-else:
-    START_OFFSET = 1
-    print(f'📌 取得開始番号: {START_OFFSET}（{SORT_KEY}順）')
-
-
 _TITLE_PREFIX_RE = re.compile(r'^【[^】]{1,20}】\s*')
 
 
-def fetch_rank_top_content_ids(limit: int) -> set:
-    """rank順（人気順）の上位limit件のcontent_idを集めて返す。
-    date順投稿時に「話題性のある新着だけ」を選ぶためのフィルターに使う。"""
-    ids = set()
+def fetch_rank_items(limit: int) -> list:
+    """rank順（人気順）の上位limit件の生アイテム（dict）をリストで返す。"""
+    items_out = []
     offset = 1
-    while len(ids) < limit:
+    while len(items_out) < limit:
         items = fetch_dmm_products(offset, sort='rank')
         if not items:
             break
-        for item in items:
-            cid = item.get('content_id', '') or item.get('product_id', '')
-            if cid:
-                ids.add(cid)
-            if len(ids) >= limit:
-                break
+        items_out.extend(items)
         offset += FETCH_COUNT
-    return ids
+    return items_out[:limit]
 
 
 def _strip_redundant_title_prefix(title: str) -> str:
@@ -866,82 +781,65 @@ def main():
     posted_history = load_posted_history()
     print(f'📚 投稿済み履歴: {len(posted_history)}件')
 
-    rank_top_ids = None
-    if SORT_KEY == 'date' and RANK_TOP_LIMIT > 0:
-        print(f'\n🏆 date順投稿のため、先にrank順（人気順）上位{RANK_TOP_LIMIT}件を取得します...')
-        rank_top_ids = fetch_rank_top_content_ids(RANK_TOP_LIMIT)
-        print(f'🏆 rank順上位 {len(rank_top_ids)}件のcontent_idを取得しました。')
+    today = datetime.datetime.now(JST).date()
+    window_start = today - datetime.timedelta(days=DATE_WINDOW_DAYS)
+    print(f'\n🏆 rank順（人気順）上位{RANK_FETCH_LIMIT}件を取得します...')
+    raw_items = fetch_rank_items(RANK_FETCH_LIMIT)
+    print(f'🏆 rank順 {len(raw_items)}件を取得しました。'
+          f'（対象期間: {window_start} 〜 {today} の発売日/配信日のみ投稿対象）')
 
     safe_products = []
     seen_in_run = set()
     all_skipped = []
-    future_skipped = []
-    rank_skipped = []
-    offset = START_OFFSET
+    out_of_window_skipped = []
+    dup_skipped = 0
 
-    for page in range(1, MAX_FETCH_PAGES + 1):
+    for item in raw_items:
         if len(safe_products) >= MAX_ARTICLES:
             break
 
-        print(f'\n🔎 [{page}/{MAX_FETCH_PAGES}ページ目] {SORT_KEY}順で取得中 '
-              f'(offset={offset}, hits={FETCH_COUNT})...')
-        raw_items = fetch_dmm_products(offset)
-        if not raw_items:
-            print('  ⚠️ これ以上取得できませんでした。検索を打ち切ります。')
-            break
+        product = parse_product(item)
+        key = product_history_key(product)
 
-        for item in raw_items:
-            if len(safe_products) >= MAX_ARTICLES:
-                break
+        # 【重複防止】過去に投稿済みの作品、および今回の実行内で既に選ばれた作品はスキップする
+        if key in posted_history or key in seen_in_run:
+            dup_skipped += 1
+            continue
 
-            product = parse_product(item)
-            key = product_history_key(product)
+        ok, matched = is_safe(product)
+        if not ok:
+            all_skipped.append((product, matched))
+            continue
 
-            if key in posted_history or key in seen_in_run:
-                continue
+        # 発売日/配信日が「今日から過去DATE_WINDOW_DAYS日以内」の作品のみを対象にする
+        # （未来日＝未配信の予約作品も、この時点で自動的に対象外になる）
+        product_date = _parse_dmm_date(product.get('date', ''))
+        if product_date is None or not (window_start <= product_date.date() <= today):
+            out_of_window_skipped.append(product)
+            continue
 
-            ok, matched = is_safe(product)
-            if not ok:
-                all_skipped.append((product, matched))
-                continue
+        price_num = product.get('price_num')
+        if PRICE_MIN is not None and (price_num is None or price_num < PRICE_MIN):
+            continue
+        if PRICE_MAX is not None and (price_num is None or price_num > PRICE_MAX):
+            continue
 
-            # 【追加】配信日が投稿当日（JST）より未来の商品は、まだ配信されていない
-            # （予約掲載）扱いとして今回は投稿しない。次回以降、当日以降の実行で
-            # 対象日になれば通常通り投稿対象になる。
-            product_date = _parse_dmm_date(product.get('date', ''))
-            if product_date and product_date.date() > datetime.datetime.now(JST).date():
-                future_skipped.append(product)
-                continue
+        if CONTENT_TYPE == 'av' and EXCLUDE_VR and _is_vr_product(product):
+            continue
 
-            # date順投稿時のみ：rank順上位に入っていない作品はスキップする
-            if rank_top_ids is not None and product.get('content_id') not in rank_top_ids:
-                rank_skipped.append(product)
-                continue
-
-            price_num = product.get('price_num')
-            if PRICE_MIN is not None and (price_num is None or price_num < PRICE_MIN):
-                continue
-            if PRICE_MAX is not None and (price_num is None or price_num > PRICE_MAX):
-                continue
-
-            if CONTENT_TYPE == 'av' and EXCLUDE_VR and _is_vr_product(product):
-                continue
-
-            seen_in_run.add(key)
-            safe_products.append(product)
-
-        offset += FETCH_COUNT
+        seen_in_run.add(key)
+        safe_products.append(product)
 
     print(f'\n📊 検索結果: {len(safe_products)}/{MAX_ARTICLES}件 集まりました '
-          f'（安全フィルター除外 {len(all_skipped)}件・配信予定日が未来のため除外 {len(future_skipped)}件・'
-          f'rank順上位{RANK_TOP_LIMIT}件外のため除外 {len(rank_skipped)}件）')
+          f'（安全フィルター除外 {len(all_skipped)}件・対象期間外のため除外 {len(out_of_window_skipped)}件・'
+          f'投稿済み重複のため除外 {dup_skipped}件）')
 
-    if future_skipped:
-        print('   ⏳ 配信予定日が未来のためスキップ:')
-        for p in future_skipped[:10]:
-            print(f"      - {p['title'][:40]}（配信日: {p.get('date')}）")
-        if len(future_skipped) > 10:
-            print(f'      …他{len(future_skipped) - 10}件')
+    if out_of_window_skipped:
+        print(f'   📅 対象期間（{window_start}〜{today}）外のためスキップ（例）:')
+        for p in out_of_window_skipped[:10]:
+            print(f"      - {p['title'][:40]}（発売日/配信日: {p.get('date')}）")
+        if len(out_of_window_skipped) > 10:
+            print(f'      …他{len(out_of_window_skipped) - 10}件')
 
     if all_skipped:
         Path('outputs').mkdir(exist_ok=True)
@@ -954,16 +852,16 @@ def main():
         print(f'📄 除外ログ: {skip_path}')
 
     if not safe_products:
-        print('⚠️ 投稿対象の作品がありませんでした（フィルター/重複除外で全件除外、または取得0件）。')
+        print('⚠️ 投稿対象の作品がありませんでした（フィルター/重複除外で全件除外、または対象期間内に該当作品なし）。')
         sys.exit(0)
 
     if len(safe_products) < MAX_ARTICLES:
-        print(f'⚠️ {MAX_FETCH_PAGES}ページ検索しましたが{MAX_ARTICLES}件に届きませんでした。'
-              f'集まった{len(safe_products)}件のみ投稿します。')
+        print(f'⚠️ rank順上位{RANK_FETCH_LIMIT}件・対象期間{DATE_WINDOW_DAYS}日以内の中では'
+              f'{MAX_ARTICLES}件に届きませんでした。集まった{len(safe_products)}件のみ投稿します。')
 
     posted = 0
     for p in safe_products:
-        print(f"\n📝 記事生成中: {p['title'][:40]}（配信日: {p.get('date') or '不明'}）")
+        print(f"\n📝 記事生成中: {p['title'][:40]}（発売日/配信日: {p.get('date') or '不明'}）")
         article = build_article(p)
         if post_draft_to_wordpress(article):
             posted += 1
