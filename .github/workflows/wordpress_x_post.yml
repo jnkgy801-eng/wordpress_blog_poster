@@ -10,13 +10,14 @@ on:
   workflow_dispatch:
     inputs:
       content_type:
-        description: 'コンテンツ種別'
+        description: 'コンテンツ種別（bothで同人・AV両方を投稿）'
         required: false
-        default: 'doujin'
+        default: 'av'
         type: choice
         options:
-          - doujin  # FANZA同人
           - av      # FANZA動画
+          - doujin  # FANZA同人
+          - both    # 同人・AV両方
       dmm_sort_mode:
         description: 'ソート順'
         required: false
@@ -82,7 +83,7 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: WordPress記事を生成・投稿（＋設定によりXへも紹介ポスト）
+      - name: WordPress記事を生成・投稿（＋設定によりAV分のみXへも紹介ポスト）
         env:
           # --- DMM/FANZA API 認証情報 ---
           DMM_API_ID:        ${{ secrets.DMM_API_ID }}
@@ -98,18 +99,33 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
           # --- このワークフロー実行時の入力値 ---
-          CONTENT_TYPE:      ${{ github.event.inputs.content_type || 'doujin' }}
-          DMM_SORT_MODE:     ${{ github.event.inputs.dmm_sort_mode || 'rank' }}
-          MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '5' }}
-          PRICE_MIN:         ${{ github.event.inputs.price_min }}
-          PRICE_MAX:         ${{ github.event.inputs.price_max }}
+          CONTENT_TYPE_INPUT:   ${{ github.event.inputs.content_type || 'av' }}
+          DMM_SORT_MODE:        ${{ github.event.inputs.dmm_sort_mode || 'rank' }}
+          MAX_ARTICLES:         ${{ github.event.inputs.max_articles || '5' }}
+          PRICE_MIN:            ${{ github.event.inputs.price_min }}
+          PRICE_MAX:            ${{ github.event.inputs.price_max }}
 
-          # --- WordPress公開と同時にXへも紹介ポストする設定（Buffer経由） ---
+          # --- WordPress公開と同時にXへも紹介ポストする設定（Buffer経由・AV分のみ適用） ---
           # WP_POST_STATUSがpublish以外の場合は、スクリプト側で自動的に無効化されます。
-          AUTO_POST_TO_X:    ${{ github.event.inputs.auto_post_to_x || 'true' }}
-          BUFFER_API_KEY:    ${{ secrets.BUFFER_API_KEY }}
-          BUFFER_CHANNEL_ID: ${{ secrets.BUFFER_CHANNEL_ID }}
-        run: python wordpress_blog_poster_x.py
+          AUTO_POST_TO_X_INPUT: ${{ github.event.inputs.auto_post_to_x || 'true' }}
+          BUFFER_API_KEY:       ${{ secrets.BUFFER_API_KEY }}
+          BUFFER_CHANNEL_ID:    ${{ secrets.BUFFER_CHANNEL_ID }}
+        run: |
+          set -e
+          # content_type=both のときは「同人」→「AV」の順に2回実行する。
+          # X（Buffer経由）への紹介ポストはAV分のみ有効にし、同人分は必ず無効にする。
+          if [ "$CONTENT_TYPE_INPUT" = "both" ]; then
+            echo "▶▶▶ 同人を投稿します（Xへの紹介ポストは行いません）"
+            CONTENT_TYPE=doujin AUTO_POST_TO_X=false python wordpress_blog_poster_x.py
+
+            echo "▶▶▶ AVを投稿します（設定によりXへも紹介ポストします）"
+            CONTENT_TYPE=av AUTO_POST_TO_X="$AUTO_POST_TO_X_INPUT" python wordpress_blog_poster_x.py
+          elif [ "$CONTENT_TYPE_INPUT" = "av" ]; then
+            CONTENT_TYPE=av AUTO_POST_TO_X="$AUTO_POST_TO_X_INPUT" python wordpress_blog_poster_x.py
+          else
+            # doujin指定時は常にXへの紹介ポストを行わない
+            CONTENT_TYPE=doujin AUTO_POST_TO_X=false python wordpress_blog_poster_x.py
+          fi
 
       - name: 投稿済み履歴・除外ログをリポジトリにコミット
         run: |
