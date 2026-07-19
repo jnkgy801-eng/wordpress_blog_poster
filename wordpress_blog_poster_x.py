@@ -757,7 +757,7 @@ def build_x_post_text(product: dict, wp_link: str, char_limit: int = 280) -> str
     title = product.get('title', '')
     catchcopy = build_x_catchcopy(product)
     price = product.get('price', '')
-    base_tag = f'#{CONTENT_LABEL} #PR'
+    base_tag = f'#{CONTENT_LABEL}'
 
     def title_line(limit):
         t = (title[:limit] + '…') if len(title) > limit else title
@@ -879,12 +879,12 @@ def post_draft_to_wordpress(article: dict):
 
     tag_ids = []
     for genre_name in article['categories']:
-        if genre_name in (CONTENT_LABEL, 'PR'):
+        if genre_name in (CONTENT_LABEL, 'P'):
             continue
         tid = _get_or_create_term('tags', genre_name, _tag_cache)
         if tid:
             tag_ids.append(tid)
-    pr_tag_id = _get_or_create_term('tags', 'PR', _tag_cache)
+    pr_tag_id = _get_or_create_term('tags', 'P', _tag_cache)
     if pr_tag_id:
         tag_ids.append(pr_tag_id)
 
