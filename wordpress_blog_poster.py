@@ -79,6 +79,11 @@ DMM_SORT_MODE = os.environ.get('DMM_SORT_MODE', 'rank').lower()
 SORT_TARGETS = {'date': 'date', 'rank': 'rank'}
 SORT_KEY = SORT_TARGETS.get(DMM_SORT_MODE, 'rank')
 
+# date順（新着順）で投稿する際、話題性の低い新着だけが並ぶのを避けるため、
+# rank順（人気順）の上位RANK_TOP_LIMIT件に入っている作品だけを投稿対象にする。
+# 0以下を指定するとこの絞り込みは行わない。
+RANK_TOP_LIMIT = int(os.environ.get('RANK_TOP_LIMIT', '300'))
+
 # 価格フィルタ（円）。未設定なら制限なし。price_numが取得できない商品は対象外にはしない。
 def _parse_price_env(name: str):
     raw = os.environ.get(name, '').strip()
@@ -162,7 +167,7 @@ def product_history_key(product: dict) -> str:
 # 🔧 DMM API 関連（既存スクリプトと同じロジックを踏襲）
 # ================================================================
 
-def fetch_dmm_products(offset: int):
+def fetch_dmm_products(offset: int, sort: str = None):
     params = {
         'api_id':       DMM_API_ID,
         'affiliate_id': DMM_AFFILIATE_ID,
@@ -171,7 +176,7 @@ def fetch_dmm_products(offset: int):
         'floor':        FLOOR,
         'hits':         FETCH_COUNT,
         'offset':       offset,
-        'sort':         SORT_KEY,
+        'sort':         sort or SORT_KEY,
         'output':       'json',
     }
     try:
@@ -188,6 +193,25 @@ def fetch_dmm_products(offset: int):
 
 
 _TITLE_PREFIX_RE = re.compile(r'^【[^】]{1,20}】\s*')
+
+
+def fetch_rank_top_content_ids(limit: int) -> set:
+    """rank順（人気順）の上位limit件のcontent_idを集めて返す。
+    date順投稿時に「話題性のある新着だけ」を選ぶためのフィルターに使う。"""
+    ids = set()
+    offset = 1
+    while len(ids) < limit:
+        items = fetch_dmm_products(offset, sort='rank')
+        if not items:
+            break
+        for item in items:
+            cid = item.get('content_id', '') or item.get('product_id', '')
+            if cid:
+                ids.add(cid)
+            if len(ids) >= limit:
+                break
+        offset += FETCH_COUNT
+    return ids
 
 
 def _strip_redundant_title_prefix(title: str) -> str:
@@ -781,10 +805,17 @@ def main():
     posted_history = load_posted_history()
     print(f'📚 投稿済み履歴: {len(posted_history)}件')
 
+    rank_top_ids = None
+    if SORT_KEY == 'date' and RANK_TOP_LIMIT > 0:
+        print(f'\n🏆 date順投稿のため、先にrank順（人気順）上位{RANK_TOP_LIMIT}件を取得します...')
+        rank_top_ids = fetch_rank_top_content_ids(RANK_TOP_LIMIT)
+        print(f'🏆 rank順上位 {len(rank_top_ids)}件のcontent_idを取得しました。')
+
     safe_products = []
     seen_in_run = set()
     all_skipped = []
     future_skipped = []
+    rank_skipped = []
     offset = START_OFFSET
 
     for page in range(1, MAX_FETCH_PAGES + 1):
@@ -821,6 +852,11 @@ def main():
                 future_skipped.append(product)
                 continue
 
+            # date順投稿時のみ：rank順上位に入っていない作品はスキップする
+            if rank_top_ids is not None and product.get('content_id') not in rank_top_ids:
+                rank_skipped.append(product)
+                continue
+
             price_num = product.get('price_num')
             if PRICE_MIN is not None and (price_num is None or price_num < PRICE_MIN):
                 continue
@@ -836,7 +872,8 @@ def main():
         offset += FETCH_COUNT
 
     print(f'\n📊 検索結果: {len(safe_products)}/{MAX_ARTICLES}件 集まりました '
-          f'（安全フィルター除外 {len(all_skipped)}件・配信予定日が未来のため除外 {len(future_skipped)}件）')
+          f'（安全フィルター除外 {len(all_skipped)}件・配信予定日が未来のため除外 {len(future_skipped)}件・'
+          f'rank順上位{RANK_TOP_LIMIT}件外のため除外 {len(rank_skipped)}件）')
 
     if future_skipped:
         print('   ⏳ 配信予定日が未来のためスキップ:')
