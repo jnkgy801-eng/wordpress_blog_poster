@@ -13,6 +13,7 @@ import re
 import sys
 import json
 import datetime
+JST = datetime.timezone(datetime.timedelta(hours=9))
 import requests
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -116,12 +117,60 @@ def _is_vr_product(product: dict) -> bool:
     return False
 
 
-_raw_start = os.environ.get('POST_START_INDEX', '')
-if _raw_start.strip().isdigit():
-    START_OFFSET = int(_raw_start.strip())
-else:
-    START_OFFSET = 1
-print(f'📌 取得開始番号: {START_OFFSET}（{SORT_KEY}順）')
+def _parse_item_date(item: dict):
+    """DMM APIの'date'（例: '2026-07-19 00:00:24'）を date型に変換する。パース不能ならNone。"""
+    ds = (item.get('date') or '')[:10]
+    try:
+        return datetime.datetime.strptime(ds, '%Y-%m-%d').date()
+    except Exception:
+        return None
+
+
+def find_today_start_offset(max_hi: int = 20000) -> int:
+    """date順（配信日の新しい順）のリストは、未配信の未来日の作品が先頭に並ぶことがある。
+    毎回offset=1から検索すると、この「未来日ゾーン」を延々スキャンして無駄になるため、
+    二分探索で「今日以前の作品が始まるおおよその位置」を先に特定し、そこから検索を始める。
+    hits=1の軽いリクエストのみを使うため、API呼び出し回数はO(log N)に収まる。
+    見つからない場合は安全のため1を返す（従来通りの先頭からの検索）。"""
+    today = datetime.datetime.now(JST).date()
+
+    def date_at(offset: int):
+        items = fetch_dmm_products(offset, sort='date', hits=1)
+        if not items:
+            return None
+        return _parse_item_date(items[0])
+
+    # offset=1がすでに「今日以前」なら、未来日ゾーン自体が無いので1のまま
+    d1 = date_at(1)
+    if d1 is None:
+        return 1
+    if d1 <= today:
+        return 1
+
+    # hiが「今日以前」になるまで倍々に広げる（未来日ゾーンの終わりを探す）
+    lo, hi = 1, 2
+    d_hi = date_at(hi)
+    while (d_hi is None or d_hi > today) and hi < max_hi:
+        lo = hi
+        hi *= 2
+        d_hi = date_at(hi)
+
+    if d_hi is not None and d_hi > today:
+        # 上限まですべて未来日だった（かなり先の予約作品が大量にある状態）。
+        # 安全のため先頭から検索する従来動作にフォールバックする。
+        print(f'⚠️ offset={max_hi}まで探索しましたが未来日の作品ばかりでした。offset=1から検索します。')
+        return 1
+
+    # lo（未来日）〜hi（今日以前）の間を二分探索して境界を絞り込む
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        d_mid = date_at(mid)
+        if d_mid is None or d_mid > today:
+            lo = mid
+        else:
+            hi = mid
+
+    return hi
 
 FETCH_COUNT = int(os.environ.get('FETCH_COUNT', '100'))
 MAX_ARTICLES = int(os.environ.get('MAX_ARTICLES', '5'))  # 1回の実行で投稿する記事数の上限
@@ -167,14 +216,14 @@ def product_history_key(product: dict) -> str:
 # 🔧 DMM API 関連（既存スクリプトと同じロジックを踏襲）
 # ================================================================
 
-def fetch_dmm_products(offset: int, sort: str = None):
+def fetch_dmm_products(offset: int, sort: str = None, hits: int = None):
     params = {
         'api_id':       DMM_API_ID,
         'affiliate_id': DMM_AFFILIATE_ID,
         'site':         'FANZA',
         'service':      SERVICE,
         'floor':        FLOOR,
-        'hits':         FETCH_COUNT,
+        'hits':         hits or FETCH_COUNT,
         'offset':       offset,
         'sort':         sort or SORT_KEY,
         'output':       'json',
@@ -190,6 +239,21 @@ def fetch_dmm_products(offset: int, sort: str = None):
     except Exception as e:
         print(f'❌ DMM APIエラー（offset={offset}）: {e}')
         return []
+
+
+_raw_start = os.environ.get('POST_START_INDEX', '')
+if _raw_start.strip().isdigit():
+    START_OFFSET = int(_raw_start.strip())
+    print(f'📌 取得開始番号: {START_OFFSET}（{SORT_KEY}順・手動指定）')
+elif SORT_KEY == 'date':
+    # POST_START_INDEX未指定（＝スケジュール実行等）かつdate順の場合は、
+    # 未来配信日の作品ゾーンを自動でスキップした位置から検索を始める。
+    print('📌 取得開始番号が未指定のため、date順の「今日以前」開始位置を自動探索します...')
+    START_OFFSET = find_today_start_offset()
+    print(f'📌 取得開始番号: {START_OFFSET}（date順・自動探索）')
+else:
+    START_OFFSET = 1
+    print(f'📌 取得開始番号: {START_OFFSET}（{SORT_KEY}順）')
 
 
 _TITLE_PREFIX_RE = re.compile(r'^【[^】]{1,20}】\s*')
@@ -783,9 +847,6 @@ def post_draft_to_wordpress(article: dict) -> bool:
 # ================================================================
 # 🚀 メイン実行
 # ================================================================
-
-JST = datetime.timezone(datetime.timedelta(hours=9))
-
 
 def _parse_dmm_date(date_str):
     """DMMの date フィールド（例: 'YYYY-MM-DD HH:MM:SS'）をdatetimeに変換する。
