@@ -1,0 +1,117 @@
+name: FANZA → WordPress記事自動生成（＋公開時にXへも紹介ポスト）
+
+# outputs/ 配下（投稿済み履歴 posted_history.json 等）をリポジトリへpushするため、
+# GITHUB_TOKEN に書き込み権限を明示的に付与する
+permissions:
+  contents: write
+
+on:
+  # 手動実行（細かいオプション指定はこちら）
+  workflow_dispatch:
+    inputs:
+      content_type:
+        description: 'コンテンツ種別'
+        required: false
+        default: 'doujin'
+        type: choice
+        options:
+          - doujin  # FANZA同人
+          - av      # FANZA動画
+      dmm_sort_mode:
+        description: 'ソート順'
+        required: false
+        default: 'rank'
+        type: choice
+        options:
+          - rank
+          - date
+      max_articles:
+        description: '1回の実行で投稿する記事数の上限'
+        required: false
+        default: '5'
+        type: string
+      wp_post_status:
+        description: 'WordPress投稿ステータス（publishでないとX自動投稿は動作しません）'
+        required: false
+        default: 'publish'
+        type: choice
+        options:
+          - publish
+          - draft
+          - pending
+      auto_post_to_x:
+        description: '公開と同時にXへも紹介ポストする（Buffer経由）'
+        required: false
+        default: true
+        type: boolean
+      price_min:
+        description: '価格フィルタ（下限・円、空欄で指定なし）'
+        required: false
+        default: ''
+        type: string
+      price_max:
+        description: '価格フィルタ（上限・円、空欄で指定なし）'
+        required: false
+        default: ''
+        type: string
+
+  # 1日3回（9時・15時・21時 JST=0時・6時・12時 UTC）自動実行
+  schedule:
+    - cron: '0 0,6,12 * * *'
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Pythonのセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 依存ライブラリのインストール
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Gitの設定（投稿済み履歴をpushするため先に設定）
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: WordPress記事を生成・投稿（＋設定によりXへも紹介ポスト）
+        env:
+          # --- DMM/FANZA API 認証情報 ---
+          DMM_API_ID:        ${{ secrets.DMM_API_ID }}
+          DMM_AFFILIATE_ID:  ${{ secrets.DMM_AFFILIATE_ID }}
+
+          # --- WordPress REST API 認証情報 ---
+          WP_URL:            ${{ secrets.WP_URL }}
+          WP_USERNAME:       ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD:   ${{ secrets.WP_APP_PASSWORD }}
+          WP_POST_STATUS:    ${{ github.event.inputs.wp_post_status || 'publish' }}
+
+          # --- 記事本文生成（未設定ならテンプレート文章にフォールバック） ---
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+          # --- このワークフロー実行時の入力値 ---
+          CONTENT_TYPE:      ${{ github.event.inputs.content_type || 'doujin' }}
+          DMM_SORT_MODE:     ${{ github.event.inputs.dmm_sort_mode || 'rank' }}
+          MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '5' }}
+          PRICE_MIN:         ${{ github.event.inputs.price_min }}
+          PRICE_MAX:         ${{ github.event.inputs.price_max }}
+
+          # --- WordPress公開と同時にXへも紹介ポストする設定（Buffer経由） ---
+          # WP_POST_STATUSがpublish以外の場合は、スクリプト側で自動的に無効化されます。
+          AUTO_POST_TO_X:    ${{ github.event.inputs.auto_post_to_x || 'true' }}
+          BUFFER_API_KEY:    ${{ secrets.BUFFER_API_KEY }}
+          BUFFER_CHANNEL_ID: ${{ secrets.BUFFER_CHANNEL_ID }}
+        run: python wordpress_blog_poster.py
+
+      - name: 投稿済み履歴・除外ログをリポジトリにコミット
+        run: |
+          git add outputs/
+          git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 自動生成: WordPress投稿済み履歴更新 ($(date +'%Y-%m-%d %H:%M:%S'))" && git push)
