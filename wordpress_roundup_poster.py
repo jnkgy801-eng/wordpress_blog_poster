@@ -377,8 +377,9 @@ def post_or_update_roundup(slug: str, title: str, body: str, excerpt: str,
         payload['tags'] = tag_ids
 
     media_id = _upload_featured_image(featured_image_url, slug)
-    if media_id:
-        payload['featured_media'] = media_id
+    # media_id が取れなかった場合も featured_media: 0 を明示することで、
+    # 既存記事に前回設定されたアイキャッチが残ってしまわないようにする。
+    payload['featured_media'] = media_id if media_id else 0
 
     kind_label = 'ページ' if post_type == 'pages' else '記事'
     existing_id = _find_existing_content_by_slug(slug, post_type)
@@ -435,7 +436,10 @@ def main():
 
     body = build_roundup_body(products)
     excerpt = build_excerpt(products)
-    featured_image_url = products[0]['package_image']
+    # ランキングページ（固定ページ）はアイキャッチ画像を設定しない。
+    # 1位の作品サムネがそのままページ上部に大きく出てしまい、
+    # ランキング一覧内の1位表示と重複して見えるため。
+    featured_image_url = products[0]['package_image'] if ROUNDUP_MODE != 'ranking' else ''
 
     # 個々の作品ジャンルも、回遊性のためタグとして付与する（重複は自動で除外される）
     tag_names = []
