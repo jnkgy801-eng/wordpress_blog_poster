@@ -1,0 +1,107 @@
+name: FANZA まとめページ自動生成（ランキング / ジャンル別）
+
+on:
+  # 手動実行（モードやジャンルを指定したい場合はこちら）
+  workflow_dispatch:
+    inputs:
+      roundup_mode:
+        description: 'まとめの種類'
+        required: false
+        default: 'ranking'
+        type: choice
+        options:
+          - ranking  # 今月のランキングTOP10
+          - genre    # ジャンル別まとめ
+      content_type:
+        description: 'コンテンツ種別'
+        required: false
+        default: 'av'
+        type: choice
+        options:
+          - av      # FANZA動画
+          - doujin  # FANZA同人
+      top_n:
+        description: 'まとめる件数'
+        required: false
+        default: '10'
+        type: string
+      genre_label:
+        description: 'ジャンル名（roundup_mode=genre のときのみ使用。表示用ラベル）'
+        required: false
+        default: 'NTR'
+        type: string
+      dmm_article_id:
+        description: 'ジャンルID（roundup_mode=genre のときのみ使用。dmm_genre_search.pyで調べたID）'
+        required: false
+        default: '4111'
+        type: string
+      wp_post_status:
+        description: '投稿ステータス'
+        required: false
+        default: 'draft'
+        type: choice
+        options:
+          - draft
+          - pending
+          - publish
+
+  # 定期実行:
+  #   ・毎月1日 JST10:00（UTC 1:00）→ 今月のランキングTOP10 を更新
+  #   ・毎週月曜 JST 6:00（UTC 日曜21:00）→ ジャンル別まとめ（NTR）を更新
+  schedule:
+    - cron: '0 1 1 * *'
+    - cron: '0 21 * * 0'
+
+jobs:
+  post-roundup:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v3
+
+      - name: Pythonのセットアップ
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 依存ライブラリのインストール
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: 実行するモードを決定
+        id: mode
+        run: |
+          # 手動実行（workflow_dispatch）は入力値をそのまま使う。
+          # 定期実行（schedule）はcronの種類でモードを振り分ける。
+          #   '0 1 1 * *'（毎月1日）  → ranking
+          #   それ以外（毎週月曜）    → genre（NTR固定）
+          if [ -n "${{ github.event.inputs.roundup_mode }}" ]; then
+            echo "mode=${{ github.event.inputs.roundup_mode }}" >> "$GITHUB_OUTPUT"
+            echo "genre_label=${{ github.event.inputs.genre_label || 'NTR' }}" >> "$GITHUB_OUTPUT"
+            echo "article_id=${{ github.event.inputs.dmm_article_id || '4111' }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "0 1 1 * *" ]; then
+            echo "mode=ranking" >> "$GITHUB_OUTPUT"
+            echo "genre_label=" >> "$GITHUB_OUTPUT"
+            echo "article_id=" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=genre" >> "$GITHUB_OUTPUT"
+            echo "genre_label=NTR" >> "$GITHUB_OUTPUT"
+            echo "article_id=4111" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: まとめページを生成・投稿
+        env:
+          DMM_API_ID:       ${{ secrets.DMM_API_ID }}
+          DMM_AFFILIATE_ID: ${{ secrets.DMM_AFFILIATE_ID }}
+          WP_URL:           ${{ secrets.WP_URL }}
+          WP_USERNAME:      ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD:  ${{ secrets.WP_APP_PASSWORD }}
+          WP_POST_STATUS:   ${{ github.event.inputs.wp_post_status || 'draft' }}
+          CONTENT_TYPE:     ${{ github.event.inputs.content_type || 'av' }}
+          ROUNDUP_TOP_N:    ${{ github.event.inputs.top_n || '10' }}
+          ROUNDUP_MODE:     ${{ steps.mode.outputs.mode }}
+          GENRE_LABEL:      ${{ steps.mode.outputs.genre_label }}
+          DMM_ARTICLE_ID:   ${{ steps.mode.outputs.article_id }}
+        run: python wordpress_roundup_poster.py
