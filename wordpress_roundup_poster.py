@@ -422,7 +422,9 @@ def main():
 
     if ROUNDUP_MODE == 'ranking':
         title = build_ranking_title()
-        slug = f'ranking-{CONTENT_TYPE}-{NOW_JST.year}{NOW_JST.month:02d}'
+        # スラッグは年月を含めない固定値にする（サイト側のナビゲーションタブから
+        # 常に同じURLでリンクできるようにするため。中身は実行のたびに最新へ更新される）
+        slug = f'ranking-{CONTENT_TYPE}'
         category_names = []  # 固定ページのためカテゴリーは使わない
         post_type = 'pages'
     else:
