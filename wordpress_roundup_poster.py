@@ -335,12 +335,12 @@ def _upload_featured_image(image_url: str, slug: str):
     return None
 
 
-def _find_existing_post_by_slug(slug: str):
-    """同じslugの投稿が既にあれば、そのidを返す（無ければNone）。
+def _find_existing_content_by_slug(slug: str, post_type: str):
+    """同じslugのpost/pageが既にあれば、そのidを返す（無ければNone）。
     毎回新規記事を作らず、同じページを更新し続けるための重複防止。"""
     try:
         resp = requests.get(
-            f'{WP_URL}/wp-json/wp/v2/posts',
+            f'{WP_URL}/wp-json/wp/v2/{post_type}',
             params={'slug': slug, 'status': 'draft,pending,publish', 'context': 'edit'},
             auth=_wp_auth(), headers=_JSON_HEADERS, timeout=15,
         )
@@ -349,39 +349,45 @@ def _find_existing_post_by_slug(slug: str):
             if isinstance(results, list) and results:
                 return results[0]['id']
     except Exception as e:
-        print(f'    ⚠️ 既存記事の検索エラー: {e}')
+        print(f'    ⚠️ 既存{("ページ" if post_type == "pages" else "記事")}の検索エラー: {e}')
     return None
 
 
 def post_or_update_roundup(slug: str, title: str, body: str, excerpt: str,
-                            featured_image_url: str, category_names: list, tag_names: list) -> bool:
-    category_ids = [cid for cid in (
-        _get_or_create_term('categories', name, _category_cache) for name in category_names
-    ) if cid]
-    tag_ids = [tid for tid in (
-        _get_or_create_term('tags', name, _tag_cache) for name in tag_names
-    ) if tid]
-
+                            featured_image_url: str, category_names: list, tag_names: list,
+                            post_type: str = 'posts') -> bool:
+    """post_type='posts' なら通常のブログ投稿（一覧・カテゴリーページに表示される）。
+    post_type='pages' なら固定ページ（ブログの一覧には表示されず、独立したURLになる）。
+    固定ページはカテゴリー・タグを持たないため、その場合はタクソノミー付与をスキップする。"""
     payload = {
-        'title':      title,
-        'slug':       slug,
-        'excerpt':    excerpt,
-        'content':    body,
-        'status':     WP_POST_STATUS,
-        'categories': category_ids,
-        'tags':       tag_ids,
+        'title':   title,
+        'slug':    slug,
+        'excerpt': excerpt,
+        'content': body,
+        'status':  WP_POST_STATUS,
     }
+    if post_type == 'posts':
+        category_ids = [cid for cid in (
+            _get_or_create_term('categories', name, _category_cache) for name in category_names
+        ) if cid]
+        tag_ids = [tid for tid in (
+            _get_or_create_term('tags', name, _tag_cache) for name in tag_names
+        ) if tid]
+        payload['categories'] = category_ids
+        payload['tags'] = tag_ids
+
     media_id = _upload_featured_image(featured_image_url, slug)
     if media_id:
         payload['featured_media'] = media_id
 
-    existing_id = _find_existing_post_by_slug(slug)
+    kind_label = 'ページ' if post_type == 'pages' else '記事'
+    existing_id = _find_existing_content_by_slug(slug, post_type)
     if existing_id:
-        endpoint = f'{WP_URL}/wp-json/wp/v2/posts/{existing_id}'
-        verb = '更新'
+        endpoint = f'{WP_URL}/wp-json/wp/v2/{post_type}/{existing_id}'
+        verb = f'{kind_label}更新'
     else:
-        endpoint = f'{WP_URL}/wp-json/wp/v2/posts'
-        verb = '新規投稿'
+        endpoint = f'{WP_URL}/wp-json/wp/v2/{post_type}'
+        verb = f'{kind_label}新規作成'
 
     try:
         resp = requests.post(endpoint, data=json.dumps(payload).encode('utf-8'),
@@ -417,11 +423,13 @@ def main():
     if ROUNDUP_MODE == 'ranking':
         title = build_ranking_title()
         slug = f'ranking-{CONTENT_TYPE}-{NOW_JST.year}{NOW_JST.month:02d}'
-        category_names = [CONTENT_LABEL, 'ランキング']
+        category_names = []  # 固定ページのためカテゴリーは使わない
+        post_type = 'pages'
     else:
         title = build_genre_title()
         slug = f'genre-roundup-{CONTENT_TYPE}-{DMM_ARTICLE_ID}'
         category_names = [CONTENT_LABEL, 'ジャンルまとめ', GENRE_LABEL]
+        post_type = 'posts'
 
     body = build_roundup_body(products)
     excerpt = build_excerpt(products)
@@ -435,7 +443,8 @@ def main():
                 tag_names.append(g)
 
     print(f'\n📝 投稿中: {title}')
-    ok = post_or_update_roundup(slug, title, body, excerpt, featured_image_url, category_names, tag_names)
+    ok = post_or_update_roundup(slug, title, body, excerpt, featured_image_url,
+                                 category_names, tag_names, post_type=post_type)
     sys.exit(0 if ok else 1)
 
 
