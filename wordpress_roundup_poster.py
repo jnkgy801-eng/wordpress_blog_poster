@@ -88,6 +88,22 @@ EXCLUDE_VR = os.environ.get('EXCLUDE_VR', 'true').strip().lower() not in ('false
 JST = datetime.timezone(datetime.timedelta(hours=9))
 NOW_JST = datetime.datetime.now(JST)
 
+# ranking モードの集計期間: week（今週配信分。過去分をアーカイブとして蓄積する用途）
+#                        / month（今月配信分。1本のページを毎回上書き更新する用途）
+RANKING_PERIOD = os.environ.get('RANKING_PERIOD', 'week').strip().lower()
+if RANKING_PERIOD not in ('week', 'month'):
+    RANKING_PERIOD = 'week'
+
+if RANKING_PERIOD == 'week':
+    # ISO週（月曜始まり）。同じ週内に何度実行しても同じ週として扱われる。
+    _week_start_date = (NOW_JST - datetime.timedelta(days=NOW_JST.weekday())).date()
+    _week_end_date = _week_start_date + datetime.timedelta(days=6)
+    PERIOD_START = datetime.datetime.combine(_week_start_date, datetime.time(0, 0, 0), tzinfo=JST)
+    PERIOD_END = NOW_JST
+else:
+    PERIOD_START = NOW_JST.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    PERIOD_END = NOW_JST
+
 print('✅ 認証情報を読み込みました。')
 print(f'🎯 モード: {ROUNDUP_MODE}' + (f'（ジャンル: {GENRE_LABEL} / article_id={DMM_ARTICLE_ID}）' if ROUNDUP_MODE == 'genre' else ''))
 
@@ -119,10 +135,8 @@ def fetch_ranked_products(limit: int):
         'output':       'json',
     }
     if ROUNDUP_MODE == 'ranking':
-        # 今月の1日 0:00 〜 現在時刻（JST）で絞り込む
-        month_start = NOW_JST.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        params_base['gte_date'] = month_start.strftime('%Y-%m-%dT%H:%M:%S')
-        params_base['lte_date'] = NOW_JST.strftime('%Y-%m-%dT%H:%M:%S')
+        params_base['gte_date'] = PERIOD_START.strftime('%Y-%m-%dT%H:%M:%S')
+        params_base['lte_date'] = PERIOD_END.strftime('%Y-%m-%dT%H:%M:%S')
     else:
         params_base['article'] = 'genre'
         params_base['article_id'] = DMM_ARTICLE_ID
@@ -217,6 +231,14 @@ def _rank_blurb(product: dict, rank: int) -> str:
 
 
 def build_ranking_title():
+    if RANKING_PERIOD == 'week':
+        start = _week_start_date
+        end = _week_end_date
+        if start.month == end.month:
+            period_label = f'{start.month}月{start.day}日〜{end.day}日'
+        else:
+            period_label = f'{start.month}月{start.day}日〜{end.month}月{end.day}日'
+        return f"【{start.year}年{period_label}】{CONTENT_LABEL}人気ランキングTOP{TOP_N}"
     return f"【{NOW_JST.year}年{NOW_JST.month}月】{CONTENT_LABEL}人気ランキングTOP{TOP_N}"
 
 
@@ -423,11 +445,14 @@ def main():
 
     if ROUNDUP_MODE == 'ranking':
         title = build_ranking_title()
-        # スラッグは年月を含めない固定値にする（サイト側のナビゲーションタブから
-        # 常に同じURLでリンクできるようにするため。中身は実行のたびに最新へ更新される）
-        slug = f'ranking-{CONTENT_TYPE}'
-        category_names = []  # 固定ページのためカテゴリーは使わない
-        post_type = 'pages'
+        # 週単位で蓄積するアーカイブにするため、スラッグに週の開始日を含める。
+        # 同じ週内に再実行すれば同じ記事を上書き更新、週が変われば新しい記事が増える。
+        if RANKING_PERIOD == 'week':
+            slug = f'ranking-{CONTENT_TYPE}-{_week_start_date.strftime("%Y%m%d")}'
+        else:
+            slug = f'ranking-{CONTENT_TYPE}-{NOW_JST.year}{NOW_JST.month:02d}'
+        category_names = [CONTENT_LABEL, 'ランキング']
+        post_type = 'posts'
     else:
         title = build_genre_title()
         slug = f'genre-roundup-{CONTENT_TYPE}-{DMM_ARTICLE_ID}'
@@ -436,10 +461,10 @@ def main():
 
     body = build_roundup_body(products)
     excerpt = build_excerpt(products)
-    # ランキングページ（固定ページ）はアイキャッチ画像を設定しない。
-    # 1位の作品サムネがそのままページ上部に大きく出てしまい、
-    # ランキング一覧内の1位表示と重複して見えるため。
-    featured_image_url = products[0]['package_image'] if ROUNDUP_MODE != 'ranking' else ''
+    # アイキャッチ画像は1位の作品のサムネイルを使う。
+    # 「ランキング」カテゴリー一覧ページでは他の記事と同じ形式でカード表示され、
+    # 個別記事ページ側ではCSS（body.single/.page 用のルール）で非表示にしている。
+    featured_image_url = products[0]['package_image']
 
     # 個々の作品ジャンルも、回遊性のためタグとして付与する（重複は自動で除外される）
     tag_names = []
