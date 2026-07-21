@@ -30,6 +30,7 @@ import json
 import datetime
 import requests
 from xml.sax.saxutils import escape
+from PIL import Image, ImageDraw, ImageFont
 
 from age_safety_filter import is_safe
 
@@ -242,6 +243,60 @@ def build_ranking_title():
     return f"【{NOW_JST.year}年{NOW_JST.month}月】{CONTENT_LABEL}人気ランキングTOP{TOP_N}"
 
 
+# サイトのダークテーマに合わせた配色（style.cssの --dn-bg-card / --dn-accent と同じ値）
+_BANNER_BG = (27, 27, 29)
+_BANNER_ACCENT = (204, 34, 34)
+_BANNER_TEXT = (255, 255, 255)
+# GitHub Actions（ubuntu-latest）で `sudo apt-get install -y fonts-noto-cjk` 済みであることが前提
+_BANNER_FONT_CANDIDATES = [
+    '/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc',
+    '/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc',
+]
+
+
+def _load_banner_font(size: int):
+    for path in _BANNER_FONT_CANDIDATES:
+        if os.path.exists(path):
+            try:
+                return ImageFont.truetype(path, size)
+            except Exception:
+                continue
+    print('    ⚠️ 日本語フォントが見つかりませんでした（fonts-noto-cjk 未インストールの可能性）。')
+    return ImageFont.load_default()
+
+
+def generate_ranking_banner(line1: str, line2: str, out_path: str, size=(800, 450)):
+    """作品のパッケージ画像の代わりに使う、年月・週などの見出しだけを載せたバナー画像を生成する。"""
+    w, h = size
+    img = Image.new('RGB', (w, h), _BANNER_BG)
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([0, 0, w, 10], fill=_BANNER_ACCENT)
+    draw.rectangle([0, h - 10, w, h], fill=_BANNER_ACCENT)
+
+    font_big = _load_banner_font(66)
+    font_small = _load_banner_font(32)
+
+    def center_text(text, font, y):
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw = bbox[2] - bbox[0]
+        draw.text(((w - tw) / 2, y), text, fill=_BANNER_TEXT, font=font)
+
+    center_text(line1, font_big, h * 0.32)
+    center_text(line2, font_small, h * 0.58)
+
+    img.save(out_path, 'PNG')
+    return out_path
+
+
+def build_ranking_banner_labels():
+    """バナーに載せる2行分のテキスト（例: '2026年7月' / '人気ランキング TOP10'）を返す。"""
+    if RANKING_PERIOD == 'week':
+        y, m = _week_start_date.year, _week_start_date.month
+    else:
+        y, m = NOW_JST.year, NOW_JST.month
+    return f'{y}年{m}月', f'{CONTENT_LABEL}人気ランキング TOP{TOP_N}'
+
+
 def build_genre_title():
     return f"【{GENRE_LABEL}】{CONTENT_LABEL}人気まとめTOP{TOP_N}"
 
@@ -332,6 +387,27 @@ def _get_or_create_term(taxonomy: str, name: str, cache: dict):
     return None
 
 
+def _upload_local_image(file_path: str, slug: str):
+    """ローカルに生成した画像ファイル（バナー画像など）をメディアライブラリにアップロードする。"""
+    try:
+        with open(file_path, 'rb') as f:
+            file_bytes = f.read()
+        filename = f'featured-{slug}.png'
+        resp = requests.post(
+            f'{WP_URL}/wp-json/wp/v2/media', data=file_bytes, auth=_wp_auth(),
+            headers={'Content-Type': 'image/png',
+                     'Content-Disposition': f'attachment; filename="{filename}"',
+                     'Accept': 'application/json'},
+            timeout=30,
+        )
+        if resp.status_code in (200, 201):
+            return resp.json()['id']
+        print(f'    ⚠️ バナー画像のアップロードに失敗 status={resp.status_code}: {resp.text[:200]}')
+    except Exception as e:
+        print(f'    ⚠️ バナー画像のアップロードエラー: {e}')
+    return None
+
+
 def _upload_featured_image(image_url: str, slug: str):
     if not image_url:
         return None
@@ -377,10 +453,12 @@ def _find_existing_content_by_slug(slug: str, post_type: str):
 
 def post_or_update_roundup(slug: str, title: str, body: str, excerpt: str,
                             featured_image_url: str, category_names: list, tag_names: list,
-                            post_type: str = 'posts') -> bool:
+                            post_type: str = 'posts', local_banner_path: str = '') -> bool:
     """post_type='posts' なら通常のブログ投稿（一覧・カテゴリーページに表示される）。
     post_type='pages' なら固定ページ（ブログの一覧には表示されず、独立したURLになる）。
-    固定ページはカテゴリー・タグを持たないため、その場合はタクソノミー付与をスキップする。"""
+    固定ページはカテゴリー・タグを持たないため、その場合はタクソノミー付与をスキップする。
+    local_banner_path を指定した場合は、featured_image_url の代わりにそのローカル画像
+    （generate_ranking_bannerで生成したバナー画像など）をアイキャッチとして使う。"""
     payload = {
         'title':   title,
         'slug':    slug,
@@ -398,7 +476,10 @@ def post_or_update_roundup(slug: str, title: str, body: str, excerpt: str,
         payload['categories'] = category_ids
         payload['tags'] = tag_ids
 
-    media_id = _upload_featured_image(featured_image_url, slug)
+    if local_banner_path:
+        media_id = _upload_local_image(local_banner_path, slug)
+    else:
+        media_id = _upload_featured_image(featured_image_url, slug)
     # media_id が取れなかった場合も featured_media: 0 を明示することで、
     # 既存記事に前回設定されたアイキャッチが残ってしまわないようにする。
     payload['featured_media'] = media_id if media_id else 0
@@ -461,10 +542,16 @@ def main():
 
     body = build_roundup_body(products)
     excerpt = build_excerpt(products)
-    # アイキャッチ画像は1位の作品のサムネイルを使う。
-    # 「ランキング」カテゴリー一覧ページでは他の記事と同じ形式でカード表示され、
-    # 個別記事ページ側ではCSS（body.single/.page 用のルール）で非表示にしている。
-    featured_image_url = products[0]['package_image']
+
+    local_banner_path = ''
+    if ROUNDUP_MODE == 'ranking':
+        # 1位の作品のパッケージ画像は使わず、「年月＋ランキング」の見出しだけを
+        # 載せたバナー画像をサムネイルにする（カテゴリー一覧でのカード表示用）。
+        line1, line2 = build_ranking_banner_labels()
+        local_banner_path = generate_ranking_banner(line1, line2, '/tmp/ranking_banner.png')
+        featured_image_url = ''
+    else:
+        featured_image_url = products[0]['package_image']
 
     # 個々の作品ジャンルも、回遊性のためタグとして付与する（重複は自動で除外される）
     tag_names = []
@@ -475,7 +562,8 @@ def main():
 
     print(f'\n📝 投稿中: {title}')
     ok = post_or_update_roundup(slug, title, body, excerpt, featured_image_url,
-                                 category_names, tag_names, post_type=post_type)
+                                 category_names, tag_names, post_type=post_type,
+                                 local_banner_path=local_banner_path)
     sys.exit(0 if ok else 1)
 
 
