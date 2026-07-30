@@ -734,6 +734,29 @@ def post_draft_to_wordpress(article: dict) -> bool:
             endpoint, data=json.dumps(payload).encode('utf-8'),
             auth=_wp_auth(), headers=_JSON_HEADERS, timeout=20,
         )
+
+        # --- 診断ログ（原因切り分け用） -------------------------------
+        # ・resp.history に何か入っていれば、途中でリダイレクトが発生している
+        #   （POSTがGETに化ける典型パターン）。
+        # ・resp.url がendpointと異なれば、リダイレクト先URLが分かる。
+        # ・Cache関連ヘッダーがあれば、プロキシ/CDN層のキャッシュが疑われる。
+        if resp.history:
+            redirect_chain = ' -> '.join(r.url for r in resp.history) + f' -> {resp.url}'
+            print(f"    🔎 リダイレクトが発生しています: {redirect_chain}")
+        if resp.url != endpoint:
+            print(f"    🔎 最終アクセスURLがendpointと異なります: endpoint={endpoint} / 実際={resp.url}")
+        cache_headers = {
+            k: v for k, v in resp.headers.items()
+            if k.lower() in (
+                'x-cache', 'x-cache-status', 'age', 'cf-cache-status',
+                'x-litespeed-cache', 'x-proxy-cache', 'server', 'via',
+            )
+        }
+        if cache_headers:
+            print(f"    🔎 キャッシュ/プロキシ関連ヘッダー: {cache_headers}")
+        print(f"    🔎 HTTPステータス: {resp.status_code}")
+        # ---------------------------------------------------------------
+
         if resp.status_code in (200, 201):
             try:
                 result = resp.json()
