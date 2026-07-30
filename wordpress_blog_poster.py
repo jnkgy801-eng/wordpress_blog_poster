@@ -580,7 +580,10 @@ def _wp_auth():
 _JSON_HEADERS = {
     'Content-Type': 'application/json; charset=utf-8',
     'Accept': 'application/json',
-    'User-Agent': 'wordpress-blog-poster/1.0 (+https://otona-navi example)',
+    # レンタルサーバーのbot対策（Imunify360等）は、見慣れない独自User-Agentを
+    # 弾くことがあるため、一般的なブラウザのUser-Agentを名乗る。
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                  '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 }
 
 
@@ -671,6 +674,7 @@ def _upload_featured_image(image_url: str, content_id: str):
                 'Content-Type': content_type,
                 'Content-Disposition': f'attachment; filename="{filename}"',
                 'Accept': 'application/json',
+                'User-Agent': _JSON_HEADERS['User-Agent'],
             },
             timeout=30,
         )
