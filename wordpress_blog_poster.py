@@ -595,12 +595,18 @@ def build_article(product: dict) -> dict:
 
     focus_keyphrase = _build_focus_keyphrase(product, max_words=5)
 
+    # doujinの場合: カテゴリー表示名は「FANZA同人」ではなく「同人」を使う。
+    # またdoujinではPRタグを付与しない（avでは従来どおりPRを付与）。
+    display_category_label = '同人' if CONTENT_TYPE == 'doujin' else CONTENT_LABEL
+    extra_tags = [display_category_label] if CONTENT_TYPE == 'doujin' else [CONTENT_LABEL, 'PR']
+
     return {
         'title':             product['title'],
         'slug':              _make_slug(product.get('content_id', ''), product['title']),
         'excerpt':           excerpt,
         'body':              body_html,
-        'categories':        tag_genre_source + [CONTENT_LABEL, 'PR'],
+        'categories':        tag_genre_source + extra_tags,
+        'category_label':    display_category_label,
         'genre_categories':  genre_categories,
         'featured_image_url': product.get('package_image', ''),
         'content_id':        product.get('content_id', ''),
@@ -736,8 +742,13 @@ def post_draft_to_wordpress(article: dict) -> bool:
     # カテゴリーは種別ラベル（FANZA同人 / FANZA動画）に加えて、上位ジャンル（最大2件）もカテゴリーとして
     # 登録する（ジャンル別に記事一覧を辿れるようにし、サイト内回遊性を上げるため）。
     # ジャンル名は従来どおりタグにも登録し、細かい検索性も維持する。
+    # カテゴリーは種別ラベル（doujinは「同人」／avは「FANZA動画」）に加えて、
+    # 上位ジャンル（最大2件）もカテゴリーとして登録する
+    # （ジャンル別に記事一覧を辿れるようにし、サイト内回遊性を上げるため）。
+    # ジャンル名は従来どおりタグにも登録し、細かい検索性も維持する。
+    category_label = article.get('category_label') or CONTENT_LABEL
     category_ids = []
-    base_category_id = _get_or_create_term('categories', CONTENT_LABEL, _category_cache)
+    base_category_id = _get_or_create_term('categories', category_label, _category_cache)
     if base_category_id:
         category_ids.append(base_category_id)
     for genre_name in article.get('genre_categories', [])[:2]:
@@ -747,14 +758,16 @@ def post_draft_to_wordpress(article: dict) -> bool:
 
     tag_ids = []
     for genre_name in article['categories']:
-        if genre_name in (CONTENT_LABEL, 'PR'):
+        if genre_name in (category_label, CONTENT_LABEL, 'PR'):
             continue
         tid = _get_or_create_term('tags', genre_name, _tag_cache)
         if tid:
             tag_ids.append(tid)
-    pr_tag_id = _get_or_create_term('tags', 'PR', _tag_cache)
-    if pr_tag_id:
-        tag_ids.append(pr_tag_id)
+    # PRタグはavのみ付与する（doujinは付与しない）
+    if CONTENT_TYPE != 'doujin':
+        pr_tag_id = _get_or_create_term('tags', 'PR', _tag_cache)
+        if pr_tag_id:
+            tag_ids.append(pr_tag_id)
 
     payload = {
         'title':      article['title'],
