@@ -595,10 +595,10 @@ def build_article(product: dict) -> dict:
 
     focus_keyphrase = _build_focus_keyphrase(product, max_words=5)
 
-    # doujinの場合: カテゴリー表示名は「FANZA同人」ではなく「同人」を使う。
-    # またdoujinではPRタグを付与しない（avでは従来どおりPRを付与）。
-    display_category_label = '同人' if CONTENT_TYPE == 'doujin' else CONTENT_LABEL
-    extra_tags = [display_category_label] if CONTENT_TYPE == 'doujin' else [CONTENT_LABEL, 'PR']
+    # カテゴリー表示名は「FANZA」接頭辞を外す（doujin: 同人 / av: 動画）。
+    # PRタグはどちらの種別でも付与しない。
+    display_category_label = '同人' if CONTENT_TYPE == 'doujin' else '動画'
+    extra_tags = [display_category_label]
 
     return {
         'title':             product['title'],
@@ -763,11 +763,7 @@ def post_draft_to_wordpress(article: dict) -> bool:
         tid = _get_or_create_term('tags', genre_name, _tag_cache)
         if tid:
             tag_ids.append(tid)
-    # PRタグはavのみ付与する（doujinは付与しない）
-    if CONTENT_TYPE != 'doujin':
-        pr_tag_id = _get_or_create_term('tags', 'PR', _tag_cache)
-        if pr_tag_id:
-            tag_ids.append(pr_tag_id)
+    # PRタグはav/doujinいずれも付与しない
 
     payload = {
         'title':      article['title'],
