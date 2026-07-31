@@ -532,6 +532,13 @@ def _build_focus_keyphrase(product: dict, max_words: int = 5) -> str:
     return ' '.join(words[:max_words])
 
 
+def _build_seo_title(product: dict, max_len: int = 15) -> str:
+    """Google検索結果で見切れないよう、元の作品タイトルの先頭max_len文字だけを
+    SEOタイトルとして使う。"""
+    title = (product.get('title') or '').strip()
+    return title[:max_len]
+
+
 def build_article(product: dict) -> dict:
     body_content = get_article_body_ai(product)
     excerpt = _make_excerpt(product['title'])
@@ -609,6 +616,7 @@ def build_article(product: dict) -> dict:
         tag_source = tag_source + list(product['actors'])
 
     focus_keyphrase = _build_focus_keyphrase(product, max_words=5)
+    seo_title = _build_seo_title(product, max_len=15)
 
     # カテゴリーは「同人」または「動画」の1つだけを使う（ジャンルはカテゴリーに含めない、PRは付与しない）。
     display_category_label = '同人' if CONTENT_TYPE == 'doujin' else '動画'
@@ -623,6 +631,7 @@ def build_article(product: dict) -> dict:
         'featured_image_url': product.get('package_image', ''),
         'content_id':        product.get('content_id', ''),
         'focus_keyphrase':   focus_keyphrase,
+        'seo_title':         seo_title,
     }
 
 
@@ -928,12 +937,18 @@ def post_draft_to_wordpress(article: dict):
         'tags':       tag_ids,
     }
 
-    # Yoast SEOの「フォーカスキーフレーズ」を投稿と同時に設定する。
-    # ※ WordPress側で '_yoast_wpseo_focuskw' メタフィールドが
+    # Yoast SEOの「フォーカスキーフレーズ」「SEOタイトル」を投稿と同時に設定する。
+    # ※ WordPress側で '_yoast_wpseo_focuskw' / '_yoast_wpseo_title' メタフィールドが
     #   register_post_meta() 等でREST APIに公開されている必要がある。
+    meta = {}
     focus_keyphrase = article.get('focus_keyphrase') or ''
     if focus_keyphrase:
-        payload['meta'] = {'_yoast_wpseo_focuskw': focus_keyphrase}
+        meta['_yoast_wpseo_focuskw'] = focus_keyphrase
+    seo_title = article.get('seo_title') or ''
+    if seo_title:
+        meta['_yoast_wpseo_title'] = seo_title
+    if meta:
+        payload['meta'] = meta
 
     # アイキャッチ画像（featured_media）を設定する。
     # 本文側からは同じ画像を削除したので、重複表示にはならない。
