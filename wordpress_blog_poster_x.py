@@ -513,6 +513,25 @@ def _make_excerpt(title: str, max_len: int = 90) -> str:
     return plain
 
 
+def _build_focus_keyphrase(product: dict, max_words: int = 5) -> str:
+    """Yoast SEOの「フォーカスキーフレーズ」用に、ジャンル名から
+    最大max_words個の単語を選んでスペース区切りの文字列にする。
+    1文字だけの意味のないジャンル名（例:「P」）は除外する。
+    ジャンルだけで足りない場合、サークル/メーカー名で補う。"""
+    words = []
+    for g in (product.get('genres') or []):
+        g = (g or '').strip()
+        if g and len(g) > 1 and g not in words:
+            words.append(g)
+        if len(words) >= max_words:
+            break
+    if len(words) < max_words and product.get('maker'):
+        maker = product['maker'].strip()
+        if maker and maker not in words:
+            words.append(maker)
+    return ' '.join(words[:max_words])
+
+
 def build_article(product: dict) -> dict:
     body_content = get_article_body_ai(product)
     excerpt = _make_excerpt(product['title'])
@@ -583,17 +602,27 @@ def build_article(product: dict) -> dict:
         f'{card_inner}</div>'
     )
 
-    genre_categories = product['genres'][:5] if product['genres'] else []
+    # タグはジャンルをフィルタなしでそのまま使用（検索性重視）。
+    # avの場合は出演者名もタグに追加する。
+    tag_source = list(product['genres']) if product['genres'] else []
+    if CONTENT_TYPE == 'av' and product.get('actors'):
+        tag_source = tag_source + list(product['actors'])
+
+    focus_keyphrase = _build_focus_keyphrase(product, max_words=5)
+
+    # カテゴリーは「同人」または「動画」の1つだけを使う（ジャンルはカテゴリーに含めない、PRは付与しない）。
+    display_category_label = '同人' if CONTENT_TYPE == 'doujin' else '動画'
 
     return {
         'title':             product['title'],
         'slug':              _make_slug(product.get('content_id', ''), product['title']),
         'excerpt':           excerpt,
         'body':              body_html,
-        'categories':        genre_categories + [CONTENT_LABEL, 'PR'],
-        'genre_categories':  genre_categories,
+        'tags':              tag_source,
+        'category_label':    display_category_label,
         'featured_image_url': product.get('package_image', ''),
         'content_id':        product.get('content_id', ''),
+        'focus_keyphrase':   focus_keyphrase,
     }
 
 
@@ -873,28 +902,21 @@ def post_draft_to_wordpress(article: dict):
     """WordPressに投稿する。戻り値は (成功したか: bool, 記事URL: str)。"""
     endpoint = f'{WP_URL}/wp-json/wp/v2/posts'
 
-    # カテゴリーは種別ラベル（FANZA同人 / FANZA動画）に加えて、上位ジャンル（最大2件）もカテゴリーとして
-    # 登録する（ジャンル別に記事一覧を辿れるようにし、サイト内回遊性を上げるため）。
-    # ジャンル名は従来どおりタグにも登録し、細かい検索性も維持する。
+    # カテゴリーは種別ラベル（doujin:「同人」／av:「動画」）の1つだけを登録する。
+    # ジャンル・出演者はタグ側に登録する（build_articleで組み立て済みのarticle['tags']を使用）。
+    category_label = article.get('category_label') or CONTENT_LABEL
     category_ids = []
-    base_category_id = _get_or_create_term('categories', CONTENT_LABEL, _category_cache)
+    base_category_id = _get_or_create_term('categories', category_label, _category_cache)
     if base_category_id:
         category_ids.append(base_category_id)
-    for genre_name in article.get('genre_categories', [])[:2]:
-        gid = _get_or_create_term('categories', genre_name, _category_cache)
-        if gid and gid not in category_ids:
-            category_ids.append(gid)
 
     tag_ids = []
-    for genre_name in article['categories']:
-        if genre_name in (CONTENT_LABEL, 'P'):
+    for tag_name in article.get('tags', []):
+        if not tag_name or tag_name == category_label:
             continue
-        tid = _get_or_create_term('tags', genre_name, _tag_cache)
-        if tid:
+        tid = _get_or_create_term('tags', tag_name, _tag_cache)
+        if tid and tid not in tag_ids:
             tag_ids.append(tid)
-    pr_tag_id = _get_or_create_term('tags', 'P', _tag_cache)
-    if pr_tag_id:
-        tag_ids.append(pr_tag_id)
 
     payload = {
         'title':      article['title'],
@@ -905,6 +927,13 @@ def post_draft_to_wordpress(article: dict):
         'categories': category_ids,
         'tags':       tag_ids,
     }
+
+    # Yoast SEOの「フォーカスキーフレーズ」を投稿と同時に設定する。
+    # ※ WordPress側で '_yoast_wpseo_focuskw' メタフィールドが
+    #   register_post_meta() 等でREST APIに公開されている必要がある。
+    focus_keyphrase = article.get('focus_keyphrase') or ''
+    if focus_keyphrase:
+        payload['meta'] = {'_yoast_wpseo_focuskw': focus_keyphrase}
 
     # アイキャッチ画像（featured_media）を設定する。
     # 本文側からは同じ画像を削除したので、重複表示にはならない。
