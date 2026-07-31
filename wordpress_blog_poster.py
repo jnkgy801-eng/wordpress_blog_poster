@@ -481,6 +481,40 @@ def _make_excerpt(title: str, max_len: int = 90) -> str:
     return plain
 
 
+# カテゴリーとして優先したくない「販売形態・属性」系のジャンル名
+# （実際の作品ジャンルではないため、カテゴリー選定の対象から除外する）
+_NON_GENRE_KEYWORDS = {
+    '専売', '単体', '独占配信', '独占', 'ハイビジョン', '成人向け',
+    '男性向け', '通販', 'DL版', '4時間以上作品', 'デジタル限定',
+}
+
+
+def _filter_real_genres(genres: list) -> list:
+    """販売形態・属性系のキーワードを除いた、実質的な作品ジャンルのみを返す。
+    全て除外リストに該当してしまった場合は、空リストにはせず元のリストを返す
+    （カテゴリー/タグが空になるのを防ぐため）。"""
+    filtered = [g for g in genres if g not in _NON_GENRE_KEYWORDS]
+    return filtered if filtered else genres
+
+
+def _build_focus_keyphrase(product: dict, max_words: int = 5) -> str:
+    """Yoast SEOの「フォーカスキーフレーズ」用に、ジャンル名・サークル名から
+    最大max_words個の単語を選んでスペース区切りの文字列にする。
+    1文字だけの意味のないジャンル名（例:「P」）は除外する。"""
+    words = []
+    for g in (product.get('genres') or []):
+        g = (g or '').strip()
+        if g and len(g) > 1 and g not in words:
+            words.append(g)
+        if len(words) >= max_words:
+            break
+    if len(words) < max_words and product.get('maker'):
+        maker = product['maker'].strip()
+        if maker and maker not in words:
+            words.append(maker)
+    return ' '.join(words[:max_words])
+
+
 def build_article(product: dict) -> dict:
     body_content = get_article_body_ai(product)
     excerpt = _make_excerpt(product['title'])
@@ -551,17 +585,26 @@ def build_article(product: dict) -> dict:
         f'{card_inner}</div>'
     )
 
-    genre_categories = product['genres'][:5] if product['genres'] else []
+    # カテゴリー選定用のジャンルは、販売形態・属性系のキーワードを除いた
+    # 「実質的な作品ジャンル」を優先する（例:「専売」より「学園もの」を優先）
+    real_genres = _filter_real_genres(product['genres']) if product['genres'] else []
+    genre_categories = real_genres[:5] if real_genres else []
+
+    # タグは従来どおり検索性重視のため、フィルタ前の全ジャンルを使う
+    tag_genre_source = product['genres'][:5] if product['genres'] else []
+
+    focus_keyphrase = _build_focus_keyphrase(product, max_words=5)
 
     return {
         'title':             product['title'],
         'slug':              _make_slug(product.get('content_id', ''), product['title']),
         'excerpt':           excerpt,
         'body':              body_html,
-        'categories':        genre_categories + [CONTENT_LABEL, 'PR'],
+        'categories':        tag_genre_source + [CONTENT_LABEL, 'PR'],
         'genre_categories':  genre_categories,
         'featured_image_url': product.get('package_image', ''),
         'content_id':        product.get('content_id', ''),
+        'focus_keyphrase':   focus_keyphrase,
     }
 
 
@@ -722,6 +765,14 @@ def post_draft_to_wordpress(article: dict) -> bool:
         'categories': category_ids,
         'tags':       tag_ids,
     }
+
+    # Yoast SEOの「フォーカスキーフレーズ」を投稿と同時に設定する。
+    # ※ WordPress側で '_yoast_wpseo_focuskw' メタフィールドが
+    #   register_post_meta() 等でREST APIに公開されている必要がある
+    #   （下記コメント参照。未対応の場合はこのmetaは保存されない）。
+    focus_keyphrase = article.get('focus_keyphrase') or ''
+    if focus_keyphrase:
+        payload['meta'] = {'_yoast_wpseo_focuskw': focus_keyphrase}
 
     # アイキャッチ画像（featured_media）を設定する。
     # 本文側からは同じ画像を削除したので、重複表示にはならない。
