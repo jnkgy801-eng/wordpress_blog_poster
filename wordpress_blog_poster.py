@@ -220,6 +220,7 @@ def parse_product(item):
 
     genres = [g.get('name', '') for g in (item.get('iteminfo', {}).get('genre') or [])]
     maker  = ((item.get('iteminfo', {}).get('maker') or [{}])[0]).get('name', '')
+    actresses = [a.get('name', '') for a in (item.get('iteminfo', {}).get('actress') or []) if a.get('name')]
 
     review_info = item.get('review', {}) or {}
     try:
@@ -252,6 +253,7 @@ def parse_product(item):
         'price_num':     price_num,
         'genres':        genres,
         'maker':         maker,
+        'actresses':     actresses,
         'review_avg':    review_avg,
         'review_count':  review_count,
         'package_image': package_image,
@@ -481,22 +483,6 @@ def _make_excerpt(title: str, max_len: int = 90) -> str:
     return plain
 
 
-# カテゴリーとして優先したくない「販売形態・属性」系のジャンル名
-# （実際の作品ジャンルではないため、カテゴリー選定の対象から除外する）
-_NON_GENRE_KEYWORDS = {
-    '専売', '単体', '独占配信', '独占', 'ハイビジョン', '成人向け',
-    '男性向け', '通販', 'DL版', '4時間以上作品', 'デジタル限定',
-}
-
-
-def _filter_real_genres(genres: list) -> list:
-    """販売形態・属性系のキーワードを除いた、実質的な作品ジャンルのみを返す。
-    全て除外リストに該当してしまった場合は、空リストにはせず元のリストを返す
-    （カテゴリー/タグが空になるのを防ぐため）。"""
-    filtered = [g for g in genres if g not in _NON_GENRE_KEYWORDS]
-    return filtered if filtered else genres
-
-
 def _build_focus_keyphrase(product: dict, max_words: int = 5) -> str:
     """Yoast SEOの「フォーカスキーフレーズ」用に、ジャンル名・サークル名から
     最大max_words個の単語を選んでスペース区切りの文字列にする。
@@ -585,29 +571,24 @@ def build_article(product: dict) -> dict:
         f'{card_inner}</div>'
     )
 
-    # カテゴリー選定用のジャンルは、販売形態・属性系のキーワードを除いた
-    # 「実質的な作品ジャンル」を優先する（例:「専売」より「学園もの」を優先）
-    real_genres = _filter_real_genres(product['genres']) if product['genres'] else []
-    genre_categories = real_genres[:5] if real_genres else []
-
-    # タグは従来どおり検索性重視のため、フィルタ前の全ジャンルを使う
-    tag_genre_source = product['genres'][:5] if product['genres'] else []
+    # タグはジャンルをフィルタなしでそのまま使用（検索性重視）。
+    # avの場合は出演者名もタグに追加する。
+    tag_source = list(product['genres']) if product['genres'] else []
+    if CONTENT_TYPE == 'av' and product.get('actresses'):
+        tag_source = tag_source + list(product['actresses'])
 
     focus_keyphrase = _build_focus_keyphrase(product, max_words=5)
 
-    # カテゴリー表示名は「FANZA」接頭辞を外す（doujin: 同人 / av: 動画）。
-    # PRタグはどちらの種別でも付与しない。
+    # カテゴリーは「同人」または「動画」の1つだけを使う（ジャンルはカテゴリーに含めない）。
     display_category_label = '同人' if CONTENT_TYPE == 'doujin' else '動画'
-    extra_tags = [display_category_label]
 
     return {
         'title':             product['title'],
         'slug':              _make_slug(product.get('content_id', ''), product['title']),
         'excerpt':           excerpt,
         'body':              body_html,
-        'categories':        tag_genre_source + extra_tags,
+        'tags':              tag_source,
         'category_label':    display_category_label,
-        'genre_categories':  genre_categories,
         'featured_image_url': product.get('package_image', ''),
         'content_id':        product.get('content_id', ''),
         'focus_keyphrase':   focus_keyphrase,
@@ -739,31 +720,21 @@ def _upload_featured_image(image_url: str, content_id: str):
 def post_draft_to_wordpress(article: dict) -> bool:
     endpoint = f'{WP_URL}/wp-json/wp/v2/posts'
 
-    # カテゴリーは種別ラベル（FANZA同人 / FANZA動画）に加えて、上位ジャンル（最大2件）もカテゴリーとして
-    # 登録する（ジャンル別に記事一覧を辿れるようにし、サイト内回遊性を上げるため）。
-    # ジャンル名は従来どおりタグにも登録し、細かい検索性も維持する。
-    # カテゴリーは種別ラベル（doujinは「同人」／avは「FANZA動画」）に加えて、
-    # 上位ジャンル（最大2件）もカテゴリーとして登録する
-    # （ジャンル別に記事一覧を辿れるようにし、サイト内回遊性を上げるため）。
-    # ジャンル名は従来どおりタグにも登録し、細かい検索性も維持する。
+    # カテゴリーは種別ラベル（doujin:「同人」／av:「動画」）の1つだけを登録する。
+    # ジャンル・出演者はタグ側に登録する（build_articleで組み立て済みのarticle['tags']を使用）。
     category_label = article.get('category_label') or CONTENT_LABEL
     category_ids = []
     base_category_id = _get_or_create_term('categories', category_label, _category_cache)
     if base_category_id:
         category_ids.append(base_category_id)
-    for genre_name in article.get('genre_categories', [])[:2]:
-        gid = _get_or_create_term('categories', genre_name, _category_cache)
-        if gid and gid not in category_ids:
-            category_ids.append(gid)
 
     tag_ids = []
-    for genre_name in article['categories']:
-        if genre_name in (category_label, CONTENT_LABEL, 'PR'):
+    for tag_name in article.get('tags', []):
+        if not tag_name or tag_name == category_label:
             continue
-        tid = _get_or_create_term('tags', genre_name, _tag_cache)
-        if tid:
+        tid = _get_or_create_term('tags', tag_name, _tag_cache)
+        if tid and tid not in tag_ids:
             tag_ids.append(tid)
-    # PRタグはav/doujinいずれも付与しない
 
     payload = {
         'title':      article['title'],
