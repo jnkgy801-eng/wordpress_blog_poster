@@ -513,18 +513,30 @@ def _make_excerpt(title: str, max_len: int = 90) -> str:
     return plain
 
 
+_FOCUS_KEYPHRASE_EXCLUDE = {'ハイビジョン', '4K', '4k', 'ＨＤ', 'HD'}
+
+
 def _build_focus_keyphrase(product: dict, max_words: int = 5) -> str:
-    """Yoast SEOの「フォーカスキーフレーズ」用に、ジャンル名から
+    """Yoast SEOの「フォーカスキーフレーズ」用に、出演者名・ジャンル名から
     最大max_words個の単語を選んでスペース区切りの文字列にする。
-    1文字だけの意味のないジャンル名（例:「P」）は除外する。
+    1文字だけの意味のないジャンル名（例:「P」）や、「ハイビジョン」「4K」など
+    画質・属性系のキーワードは除外する。
+    出演者名（avのみ）を優先的に含め、残り枠をジャンルで埋める。
     ジャンルだけで足りない場合、サークル/メーカー名で補う。"""
     words = []
+    if CONTENT_TYPE == 'av' and product.get('actors'):
+        for a in product['actors']:
+            a = (a or '').strip()
+            if a and a not in words:
+                words.append(a)
+            if len(words) >= max_words:
+                break
     for g in (product.get('genres') or []):
-        g = (g or '').strip()
-        if g and len(g) > 1 and g not in words:
-            words.append(g)
         if len(words) >= max_words:
             break
+        g = (g or '').strip()
+        if g and len(g) > 1 and g not in words and g not in _FOCUS_KEYPHRASE_EXCLUDE:
+            words.append(g)
     if len(words) < max_words and product.get('maker'):
         maker = product['maker'].strip()
         if maker and maker not in words:
