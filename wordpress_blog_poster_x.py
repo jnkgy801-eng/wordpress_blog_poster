@@ -296,22 +296,28 @@ def parse_product(item):
 # 📝 記事本文生成（元スクリプトと同じロジック）
 # ================================================================
 
-def get_article_body_ai(product: dict) -> dict:
+def get_article_body_ai(product: dict, focus_keyphrase: str = '') -> dict:
     if ANTHROPIC_API_KEY:
         try:
-            return _get_article_body_from_api(product)
+            return _get_article_body_from_api(product, focus_keyphrase)
         except Exception as e:
             print(f'    ⚠️ AI記事生成エラー（テンプレート使用）: {e}')
-    return _get_article_body_template(product)
+    return _get_article_body_template(product, focus_keyphrase)
 
 
-def _get_article_body_from_api(product: dict) -> dict:
+def _get_article_body_from_api(product: dict, focus_keyphrase: str = '') -> dict:
     genre_str = '・'.join(product['genres'][:5]) if product['genres'] else '不明'
     review_str = (
         f"平均{product['review_avg']}点（{product['review_count']}件のレビュー）"
         if product.get('review_avg') and product.get('review_count')
         else '不明'
     )
+    keyphrase_instruction = ''
+    if focus_keyphrase:
+        keyphrase_instruction = (
+            f"- 「{focus_keyphrase}」というキーフレーズを、OVERVIEWの最初の一文に必ず含め、\n"
+            "  かつ本文（OVERVIEW+POINTS）全体でもう1回以上、自然な形で登場させる\n"
+        )
     prompt = (
         f"{CONTENT_LABEL}（成人向け）作品を紹介するブログ記事の本文材料を作成してください。\n"
         "読み手がクスッと笑いながら読み進め、最後には『これは買うしかない』と\n"
@@ -322,6 +328,7 @@ def _get_article_body_from_api(product: dict) -> dict:
         f"価格: {product.get('price') or '不明'}\n"
         f"レビュー: {review_str}\n\n"
         "条件:\n"
+        f"{keyphrase_instruction}"
         "- 文体はユーモラスで軽快に。読者にニヤッとしてもらえるような比喩・ツッコミ・\n"
         "  軽い自虐やボケを交えてよい（下品・侮辱的にはしない）\n"
         "- 『買わない理由が見当たらない』『気づいたらカートに入れている』のような、\n"
@@ -388,10 +395,16 @@ _OVERVIEW_CLOSERS = [
 ]
 
 
-def _get_article_body_template(product: dict) -> dict:
+def _get_article_body_template(product: dict, focus_keyphrase: str = '') -> dict:
     genre_str = '、'.join(product['genres'][:5]) if product['genres'] else '不明'
     work_kind = '同人作品' if CONTENT_TYPE == 'doujin' else 'AV作品'
-    overview = f"{genre_str}系の{work_kind}です。"
+
+    # 冒頭の一文にフォーカスキーフレーズをそのまま含める
+    # （Yoastの「冒頭のキーフレーズ」チェック対策）。
+    if focus_keyphrase:
+        overview = f"「{focus_keyphrase}」に注目の{work_kind}。{genre_str}系の内容です。"
+    else:
+        overview = f"{genre_str}系の{work_kind}です。"
     if product.get('maker'):
         overview += f" 手がけるのは{product['maker']}。"
     closer = _OVERVIEW_CLOSERS_PICK(product)
@@ -405,6 +418,16 @@ def _get_article_body_template(product: dict) -> dict:
         points.append(f"レビュー平均{product['review_avg']}点（{product['review_count']}件）と、みんなも太鼓判")
     if not points:
         points = ['作品ページを開いた時点で、もう半分ハマっています']
+
+    # 本文中でもう一度フォーカスキーフレーズに触れる
+    # （Yoastの「キーフレーズ分布（最低2回）」チェック対策）。
+    # 4件上限で切り捨てられないよう、既に4件ある場合は末尾と差し替える。
+    if focus_keyphrase:
+        keyphrase_point = f"「{focus_keyphrase}」が気になった方は、ぜひ作品ページもチェックしてみてください"
+        if len(points) >= 4:
+            points[3] = keyphrase_point
+        else:
+            points.append(keyphrase_point)
 
     return {'overview': overview, 'points': points[:4]}
 
@@ -566,8 +589,8 @@ def _build_seo_title(product: dict, keyphrase: str = '', max_len: int = 32) -> s
 
 
 def build_article(product: dict) -> dict:
-    body_content = get_article_body_ai(product)
     focus_keyphrase = _build_focus_keyphrase(product)
+    body_content = get_article_body_ai(product, focus_keyphrase)
     seo_title = _build_seo_title(product, keyphrase=focus_keyphrase, max_len=32)
     # メタディスクリプション・抜粋の冒頭にキーフレーズを含める
     # （Yoastの「メタディスクリプション中のキーフレーズ」チェック対策）。
