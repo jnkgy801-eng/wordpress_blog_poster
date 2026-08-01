@@ -9,6 +9,14 @@ DMMアフィリエイトAPI(v3)で同人作品情報を取得し、作品ごと�
 """
 
 import os
+
+# ================================================================
+# 📌 スクリプトバージョン（デプロイ確認用）
+#    「投稿によって結果が違う」といった不整合が起きた際、
+#    どのバージョンのコードで生成された投稿かを確認できるようにする。
+#    コードを修正するたびに、この日付/番号を更新すること。
+# ================================================================
+SCRIPT_VERSION = '2026-08-01-01'
 import re
 import sys
 import json
@@ -1031,6 +1039,8 @@ def post_draft_to_wordpress(article: dict):
     metadesc = article.get('excerpt') or ''
     if metadesc:
         meta['_yoast_wpseo_metadesc'] = metadesc
+    # デプロイ確認用: この投稿がどのバージョンのスクリプトで生成されたかを記録する
+    meta['_onavi_script_version'] = SCRIPT_VERSION
     if meta:
         payload['meta'] = meta
 
@@ -1106,6 +1116,7 @@ def run_for_content_type(content_type: str):
     FLOOR         = _CONTENT_TYPE_TARGETS[content_type]['floor']
     CONTENT_LABEL = _CONTENT_TYPE_TARGETS[content_type]['label']
     print(f'\n{"=" * 60}')
+    print(f'🏷️ スクリプトバージョン: {SCRIPT_VERSION}')
     print(f'📌 コンテンツ種別: {CONTENT_LABEL}（service={SERVICE}, floor={FLOOR}）')
     print("=" * 60)
 

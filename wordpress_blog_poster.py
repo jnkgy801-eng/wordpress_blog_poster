@@ -11,6 +11,14 @@ DMMアフィリエイトAPI(v3)で同人作品情報を取得し、作品ごと�
 import os
 import re
 import sys
+
+# ================================================================
+# 📌 スクリプトバージョン（デプロイ確認用）
+#    「投稿によって結果が違う」といった不整合が起きた際、
+#    どのバージョンのコードで生成された投稿かを確認できるようにする。
+#    コードを修正するたびに、この日付/番号を更新すること。
+# ================================================================
+SCRIPT_VERSION = '2026-08-01-01'
 import json
 import datetime
 JST = datetime.timezone(datetime.timedelta(hours=9))
@@ -74,6 +82,7 @@ if CONTENT_TYPE not in _CONTENT_TYPE_TARGETS:
 SERVICE       = _CONTENT_TYPE_TARGETS[CONTENT_TYPE]['service']
 FLOOR         = _CONTENT_TYPE_TARGETS[CONTENT_TYPE]['floor']
 CONTENT_LABEL = _CONTENT_TYPE_TARGETS[CONTENT_TYPE]['label']
+print(f'🏷️ スクリプトバージョン: {SCRIPT_VERSION}')
 print(f'📌 コンテンツ種別: {CONTENT_LABEL}（service={SERVICE}, floor={FLOOR}）')
 
 RANK_FETCH_LIMIT = int(os.environ.get('RANK_FETCH_LIMIT', '500'))
@@ -850,6 +859,8 @@ def post_draft_to_wordpress(article: dict) -> bool:
     metadesc = article.get('excerpt') or ''
     if metadesc:
         meta['_yoast_wpseo_metadesc'] = metadesc
+    # デプロイ確認用: この投稿がどのバージョンのスクリプトで生成されたかを記録する
+    meta['_onavi_script_version'] = SCRIPT_VERSION
     if meta:
         payload['meta'] = meta
 
