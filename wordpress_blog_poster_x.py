@@ -516,13 +516,15 @@ def _make_excerpt(title: str, max_len: int = 90) -> str:
 _FOCUS_KEYPHRASE_EXCLUDE = {'ハイビジョン', '4K', '4k', 'ＨＤ', 'HD'}
 
 
-def _build_focus_keyphrase(product: dict, max_words: int = 5) -> str:
+def _build_focus_keyphrase(product: dict, max_words: int = 2, max_chars: int = 12) -> str:
     """Yoast SEOの「フォーカスキーフレーズ」用に、出演者名・ジャンル名から
     最大max_words個の単語を選んでスペース区切りの文字列にする。
+    Yoastは12文字前後を推奨しているため、文字数がmax_charsを超える場合は
+    単語数をさらに削って収める。
     1文字だけの意味のないジャンル名（例:「P」）や、「ハイビジョン」「4K」など
     画質・属性系のキーワードは除外する。
     出演者名（avのみ）を優先的に含め、残り枠をジャンルで埋める。
-    ジャンルだけで足りない場合、サークル/メーカー名で補う。"""
+    出演者名が無い場合（doujin等）はジャンルのみ、それも無ければサークル/メーカー名を使う。"""
     words = []
     if CONTENT_TYPE == 'av' and product.get('actors'):
         for a in product['actors']:
@@ -537,23 +539,43 @@ def _build_focus_keyphrase(product: dict, max_words: int = 5) -> str:
         g = (g or '').strip()
         if g and len(g) > 1 and g not in words and g not in _FOCUS_KEYPHRASE_EXCLUDE:
             words.append(g)
-    if len(words) < max_words and product.get('maker'):
+    if not words and product.get('maker'):
         maker = product['maker'].strip()
-        if maker and maker not in words:
+        if maker:
             words.append(maker)
+
+    # 文字数がmax_charsを超える場合、収まるまで末尾の単語を削る
+    while len(words) > 1 and len(' '.join(words)) > max_chars:
+        words.pop()
+
     return ' '.join(words[:max_words])
 
 
-def _build_seo_title(product: dict, max_len: int = 15) -> str:
-    """Google検索結果で見切れないよう、元の作品タイトルの先頭max_len文字だけを
-    SEOタイトルとして使う。"""
+def _build_seo_title(product: dict, keyphrase: str = '', max_len: int = 32) -> str:
+    """検索結果に表示されるSEOタイトルを生成する。
+    Yoastの「キーフレーズがSEOタイトルの先頭にあること」という推奨に沿うため、
+    先頭にフォーカスキーフレーズを置き、その後に元の作品タイトルを
+    max_lenに収まる範囲で続ける。"""
     title = (product.get('title') or '').strip()
-    return title[:max_len]
+    if not keyphrase:
+        return title[:max_len]
+    remaining = max_len - len(keyphrase) - 1  # キーフレーズと本タイトルの間の半角スペース分
+    if remaining <= 0:
+        return keyphrase[:max_len]
+    return f'{keyphrase} {title[:remaining].rstrip()}'
 
 
 def build_article(product: dict) -> dict:
     body_content = get_article_body_ai(product)
-    excerpt = _make_excerpt(product['title'])
+    focus_keyphrase = _build_focus_keyphrase(product)
+    seo_title = _build_seo_title(product, keyphrase=focus_keyphrase, max_len=32)
+    # メタディスクリプション・抜粋の冒頭にキーフレーズを含める
+    # （Yoastの「メタディスクリプション中のキーフレーズ」チェック対策）。
+    _base_excerpt = _make_excerpt(product['title'], max_len=90)
+    if focus_keyphrase and focus_keyphrase not in _base_excerpt:
+        excerpt = _make_excerpt(f'{focus_keyphrase}｜{product["title"]}', max_len=90)
+    else:
+        excerpt = _base_excerpt
     overview_html = _paragraphs_to_html(body_content['overview'])
     points_html = _points_list_html(body_content['points'])
     genre_badges_html = _genre_badges_html(product.get('genres', []))
@@ -600,6 +622,15 @@ def build_article(product: dict) -> dict:
         '※成人向けコンテンツを含みます。18歳未満の方はご利用いただけません。</p>'
     )
 
+    internal_link_html = ''
+    if WP_URL:
+        cat_label = '同人' if CONTENT_TYPE == 'doujin' else '動画'
+        internal_link_html = (
+            f'<p style="font-size:13px;margin-top:14px;">'
+            f'<a href="{escape(WP_URL)}/category/{cat_label}/">'
+            f'他の{cat_label}作品もチェックする →</a></p>'
+        )
+
     card_inner = '\n'.join(
         part for part in [
             meta_line_html,
@@ -610,6 +641,7 @@ def build_article(product: dict) -> dict:
             points_html,
             gallery_html,
             cta_html,
+            internal_link_html,
             disclaimer_html,
         ] if part
     )
@@ -626,9 +658,6 @@ def build_article(product: dict) -> dict:
     tag_source = list(product['genres']) if product['genres'] else []
     if CONTENT_TYPE == 'av' and product.get('actors'):
         tag_source = tag_source + list(product['actors'])
-
-    focus_keyphrase = _build_focus_keyphrase(product, max_words=5)
-    seo_title = _build_seo_title(product, max_len=15)
 
     # カテゴリーは「同人」または「動画」の1つだけを使う（ジャンルはカテゴリーに含めない、PRは付与しない）。
     display_category_label = '同人' if CONTENT_TYPE == 'doujin' else '動画'
@@ -949,9 +978,10 @@ def post_draft_to_wordpress(article: dict):
         'tags':       tag_ids,
     }
 
-    # Yoast SEOの「フォーカスキーフレーズ」「SEOタイトル」を投稿と同時に設定する。
-    # ※ WordPress側で '_yoast_wpseo_focuskw' / '_yoast_wpseo_title' メタフィールドが
-    #   register_post_meta() 等でREST APIに公開されている必要がある。
+    # Yoast SEOの「フォーカスキーフレーズ」「SEOタイトル」「メタディスクリプション」を
+    # 投稿と同時に設定する。
+    # ※ WordPress側で '_yoast_wpseo_focuskw' / '_yoast_wpseo_title' / '_yoast_wpseo_metadesc'
+    #   メタフィールドが register_post_meta() 等でREST APIに公開されている必要がある。
     meta = {}
     focus_keyphrase = article.get('focus_keyphrase') or ''
     if focus_keyphrase:
@@ -959,6 +989,9 @@ def post_draft_to_wordpress(article: dict):
     seo_title = article.get('seo_title') or ''
     if seo_title:
         meta['_yoast_wpseo_title'] = seo_title
+    metadesc = article.get('excerpt') or ''
+    if metadesc:
+        meta['_yoast_wpseo_metadesc'] = metadesc
     if meta:
         payload['meta'] = meta
 
