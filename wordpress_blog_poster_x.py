@@ -536,7 +536,11 @@ def _make_excerpt(title: str, max_len: int = 90) -> str:
     return plain
 
 
-_FOCUS_KEYPHRASE_EXCLUDE = {'ハイビジョン', '4K', '4k', 'ＨＤ', 'HD'}
+_FOCUS_KEYPHRASE_EXCLUDE = {
+    'ハイビジョン', '4K', '4k', 'ＨＤ', 'HD',
+    '独占配信', '独占', '専売', '単体', '通販', 'DL版',
+    '4時間以上作品', 'デジタル限定', '成人向け', '男性向け',
+}
 
 
 def _build_focus_keyphrase(product: dict, max_words: int = 2, max_chars: int = 12) -> str:
