@@ -315,10 +315,10 @@ def _get_article_body_from_api(product: dict, focus_keyphrase: str = '') -> dict
         "  項目ごとに違う言い回しで、思わず読みたくなる一文にする\n"
         "- 出力は必ず次のプレーンテキスト形式のみ。前置きや説明・Markdown記法は禁止。\n\n"
         "===OVERVIEW===\n"
-        "(150〜250文字程度で作品の魅力・シチュエーションを1〜2段落、ユーモアを交えて。\n"
+        "(280〜380文字程度で作品の魅力・シチュエーションを2〜3段落、ユーモアを交えて。\n"
         "段落間は空行で区切る)\n"
         "===POINTS===\n"
-        "(「ここがポイント」として3〜4個、1行1項目、先頭に「- 」を付ける)\n"
+        "(「ここがポイント」として4〜5個、1行1項目、先頭に「- 」を付ける。各項目は40〜60文字程度で)\n"
     )
     resp = requests.post(
         'https://api.anthropic.com/v1/messages',
@@ -377,11 +377,18 @@ def _get_article_body_template(product: dict, focus_keyphrase: str = '') -> dict
         overview = f"{genre_str}系の{work_kind}です。"
     if product.get('maker'):
         overview += f" 手がけるのは{product['maker']}。"
+    if product.get('price'):
+        overview += f" 価格は{product['price']}で、この内容ならコスパも十分満足できるはずです。"
+    if product.get('genres'):
+        overview += (
+            f" {genre_str}といったジャンルが好きな方はもちろん、"
+            "普段あまりこの手のジャンルを見ない方にも新鮮に映る一本です。"
+        )
     closer = _OVERVIEW_CLOSERS_PICK(product)
     overview += f"\n\n{closer}"
 
     points = []
-    for i, g in enumerate((product.get('genres') or [])[:3]):
+    for i, g in enumerate((product.get('genres') or [])[:4]):
         tmpl = _GENRE_POINT_TEMPLATES[i % len(_GENRE_POINT_TEMPLATES)]
         points.append(tmpl.format(g=g))
     if product.get('review_avg') and product.get('review_count'):
@@ -391,15 +398,15 @@ def _get_article_body_template(product: dict, focus_keyphrase: str = '') -> dict
 
     # 本文中でもう一度フォーカスキーフレーズに触れる
     # （Yoastの「キーフレーズ分布（最低2回）」チェック対策）。
-    # 4件上限で切り捨てられないよう、既に4件ある場合は末尾と差し替える。
+    # 5件上限で切り捨てられないよう、既に5件ある場合は末尾と差し替える。
     if focus_keyphrase:
         keyphrase_point = f"「{focus_keyphrase}」が気になった方は、ぜひ作品ページもチェックしてみてください"
-        if len(points) >= 4:
-            points[3] = keyphrase_point
+        if len(points) >= 5:
+            points[4] = keyphrase_point
         else:
             points.append(keyphrase_point)
 
-    return {'overview': overview, 'points': points[:4]}
+    return {'overview': overview, 'points': points[:5]}
 
 
 def _OVERVIEW_CLOSERS_PICK(product: dict) -> str:
@@ -567,12 +574,12 @@ def _build_seo_title(product: dict, keyphrase: str = '', max_len: int = 32) -> s
 def build_article(product: dict) -> dict:
     focus_keyphrase = _build_focus_keyphrase(product)
     body_content = get_article_body_ai(product, focus_keyphrase)
-    seo_title = _build_seo_title(product, keyphrase=focus_keyphrase, max_len=32)
+    seo_title = _build_seo_title(product, keyphrase=focus_keyphrase, max_len=20)
     # メタディスクリプション・抜粋の冒頭にキーフレーズを含める
     # （Yoastの「メタディスクリプション中のキーフレーズ」チェック対策）。
-    _base_excerpt = _make_excerpt(product['title'], max_len=150)
+    _base_excerpt = _make_excerpt(product['title'], max_len=80)
     if focus_keyphrase and focus_keyphrase not in _base_excerpt:
-        excerpt = _make_excerpt(f'{focus_keyphrase}｜{product["title"]}', max_len=150)
+        excerpt = _make_excerpt(f'{focus_keyphrase}｜{product["title"]}', max_len=80)
     else:
         excerpt = _base_excerpt
     overview_html = _paragraphs_to_html(body_content['overview'])
@@ -633,11 +640,11 @@ def build_article(product: dict) -> dict:
 
     card_inner = '\n'.join(
         part for part in [
+            overview_section_html,
             meta_line_html,
             genre_badges_html,
             star_html,
             price_badge_html,
-            overview_section_html,
             points_html,
             gallery_html,
             cta_html,
