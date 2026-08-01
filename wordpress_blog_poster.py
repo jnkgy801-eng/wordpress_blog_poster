@@ -220,7 +220,7 @@ def parse_product(item):
 
     genres = [g.get('name', '') for g in (item.get('iteminfo', {}).get('genre') or [])]
     maker  = ((item.get('iteminfo', {}).get('maker') or [{}])[0]).get('name', '')
-    actresses = [a.get('name', '') for a in (item.get('iteminfo', {}).get('actress') or []) if a.get('name')]
+    actors = [a.get('name', '') for a in (item.get('iteminfo', {}).get('actress') or []) if a.get('name')][:3]
 
     review_info = item.get('review', {}) or {}
     try:
@@ -253,7 +253,7 @@ def parse_product(item):
         'price_num':     price_num,
         'genres':        genres,
         'maker':         maker,
-        'actresses':     actresses,
+        'actors':        actors,
         'review_avg':    review_avg,
         'review_count':  review_count,
         'package_image': package_image,
@@ -266,22 +266,28 @@ def parse_product(item):
 # 📝 記事本文生成（元スクリプトと同じロジック）
 # ================================================================
 
-def get_article_body_ai(product: dict) -> dict:
+def get_article_body_ai(product: dict, focus_keyphrase: str = '') -> dict:
     if ANTHROPIC_API_KEY:
         try:
-            return _get_article_body_from_api(product)
+            return _get_article_body_from_api(product, focus_keyphrase)
         except Exception as e:
             print(f'    ⚠️ AI記事生成エラー（テンプレート使用）: {e}')
-    return _get_article_body_template(product)
+    return _get_article_body_template(product, focus_keyphrase)
 
 
-def _get_article_body_from_api(product: dict) -> dict:
+def _get_article_body_from_api(product: dict, focus_keyphrase: str = '') -> dict:
     genre_str = '・'.join(product['genres'][:5]) if product['genres'] else '不明'
     review_str = (
         f"平均{product['review_avg']}点（{product['review_count']}件のレビュー）"
         if product.get('review_avg') and product.get('review_count')
         else '不明'
     )
+    keyphrase_instruction = ''
+    if focus_keyphrase:
+        keyphrase_instruction = (
+            f"- 「{focus_keyphrase}」というキーフレーズを、OVERVIEWの最初の一文に必ず含め、\n"
+            "  かつ本文（OVERVIEW+POINTS）全体でもう1回以上、自然な形で登場させる\n"
+        )
     prompt = (
         f"{CONTENT_LABEL}（成人向け）作品を紹介するブログ記事の本文材料を作成してください。\n"
         "読み手がクスッと笑いながら読み進め、最後には『これは買うしかない』と\n"
@@ -292,6 +298,7 @@ def _get_article_body_from_api(product: dict) -> dict:
         f"価格: {product.get('price') or '不明'}\n"
         f"レビュー: {review_str}\n\n"
         "条件:\n"
+        f"{keyphrase_instruction}"
         "- 文体はユーモラスで軽快に。読者にニヤッとしてもらえるような比喩・ツッコミ・\n"
         "  軽い自虐やボケを交えてよい（下品・侮辱的にはしない）\n"
         "- 『買わない理由が見当たらない』『気づいたらカートに入れている』のような、\n"
@@ -358,10 +365,16 @@ _OVERVIEW_CLOSERS = [
 ]
 
 
-def _get_article_body_template(product: dict) -> dict:
+def _get_article_body_template(product: dict, focus_keyphrase: str = '') -> dict:
     genre_str = '、'.join(product['genres'][:5]) if product['genres'] else '不明'
     work_kind = '同人作品' if CONTENT_TYPE == 'doujin' else 'AV作品'
-    overview = f"{genre_str}系の{work_kind}です。"
+
+    # 冒頭の一文にフォーカスキーフレーズをそのまま含める
+    # （Yoastの「冒頭のキーフレーズ」チェック対策）。
+    if focus_keyphrase:
+        overview = f"「{focus_keyphrase}」に注目の{work_kind}。{genre_str}系の内容です。"
+    else:
+        overview = f"{genre_str}系の{work_kind}です。"
     if product.get('maker'):
         overview += f" 手がけるのは{product['maker']}。"
     closer = _OVERVIEW_CLOSERS_PICK(product)
@@ -375,6 +388,16 @@ def _get_article_body_template(product: dict) -> dict:
         points.append(f"レビュー平均{product['review_avg']}点（{product['review_count']}件）と、みんなも太鼓判")
     if not points:
         points = ['作品ページを開いた時点で、もう半分ハマっています']
+
+    # 本文中でもう一度フォーカスキーフレーズに触れる
+    # （Yoastの「キーフレーズ分布（最低2回）」チェック対策）。
+    # 4件上限で切り捨てられないよう、既に4件ある場合は末尾と差し替える。
+    if focus_keyphrase:
+        keyphrase_point = f"「{focus_keyphrase}」が気になった方は、ぜひ作品ページもチェックしてみてください"
+        if len(points) >= 4:
+            points[3] = keyphrase_point
+        else:
+            points.append(keyphrase_point)
 
     return {'overview': overview, 'points': points[:4]}
 
@@ -441,15 +464,17 @@ def _points_list_html(points: list) -> str:
     )
 
 
-def _sample_gallery_html(affiliate_url: str, sample_images: list, title: str) -> str:
+def _sample_gallery_html(affiliate_url: str, sample_images: list, title: str, focus_keyphrase: str = '') -> str:
     imgs = [u for u in (sample_images or []) if u][:8]
     if not imgs:
         return ''
+    # altテキストにフォーカスキーフレーズを含める（Yoastの「画像のalt属性のキーフレーズ」対策）
+    alt_text = f'{focus_keyphrase} {title} サンプル画像' if focus_keyphrase else f'{title} サンプル画像'
     cells = []
     for url in imgs:
         cells.append(
             f'<a href="{escape(affiliate_url)}" target="_blank" rel="nofollow" class="ona-sample-cell">'
-            f'<img src="{escape(url)}" alt="{escape(title)} サンプル画像" loading="lazy" class="ona-sample-img"></a>'
+            f'<img src="{escape(url)}" alt="{escape(alt_text)}" loading="lazy" class="ona-sample-img"></a>'
         )
     return (
         '<div class="ona-sample-gallery">'
@@ -483,33 +508,80 @@ def _make_excerpt(title: str, max_len: int = 90) -> str:
     return plain
 
 
-def _build_focus_keyphrase(product: dict, max_words: int = 5) -> str:
-    """Yoast SEOの「フォーカスキーフレーズ」用に、ジャンル名・サークル名から
+_FOCUS_KEYPHRASE_EXCLUDE = {
+    'ハイビジョン', '4K', '4k', 'ＨＤ', 'HD',
+    '独占配信', '独占', '専売', '単体', '通販', 'DL版',
+    '4時間以上作品', 'デジタル限定', '成人向け', '男性向け',
+}
+
+
+def _build_focus_keyphrase(product: dict, max_words: int = 2, max_chars: int = 12) -> str:
+    """Yoast SEOの「フォーカスキーフレーズ」用に、出演者名・ジャンル名から
     最大max_words個の単語を選んでスペース区切りの文字列にする。
-    1文字だけの意味のないジャンル名（例:「P」）は除外する。"""
+    Yoastは12文字前後を推奨しているため、文字数がmax_charsを超える場合は
+    単語数をさらに削って収める。
+    1文字だけの意味のないジャンル名（例:「P」）や、「ハイビジョン」「4K」など
+    画質・属性系のキーワードは除外する。
+    出演者名（avのみ）を優先的に含め、残り枠をジャンルで埋める。
+    出演者名が無い場合（doujin等）はジャンルのみ、それも無ければサークル/メーカー名を使う。"""
     words = []
+    if CONTENT_TYPE == 'av' and product.get('actors'):
+        for a in product['actors']:
+            a = (a or '').strip()
+            if a and a not in words:
+                words.append(a)
+            if len(words) >= max_words:
+                break
     for g in (product.get('genres') or []):
-        g = (g or '').strip()
-        if g and len(g) > 1 and g not in words:
-            words.append(g)
         if len(words) >= max_words:
             break
-    if len(words) < max_words and product.get('maker'):
+        g = (g or '').strip()
+        if g and len(g) > 1 and g not in words and g not in _FOCUS_KEYPHRASE_EXCLUDE:
+            words.append(g)
+    if not words and product.get('maker'):
         maker = product['maker'].strip()
-        if maker and maker not in words:
+        if maker:
             words.append(maker)
+
+    # 文字数がmax_charsを超える場合、収まるまで末尾の単語を削る
+    while len(words) > 1 and len(' '.join(words)) > max_chars:
+        words.pop()
+
     return ' '.join(words[:max_words])
 
 
+def _build_seo_title(product: dict, keyphrase: str = '', max_len: int = 32) -> str:
+    """検索結果に表示されるSEOタイトルを生成する。
+    Yoastの「キーフレーズがSEOタイトルの先頭にあること」という推奨に沿うため、
+    先頭にフォーカスキーフレーズを置き、その後に元の作品タイトルを
+    max_lenに収まる範囲で続ける。"""
+    title = (product.get('title') or '').strip()
+    if not keyphrase:
+        return title[:max_len]
+    remaining = max_len - len(keyphrase) - 1  # キーフレーズと本タイトルの間の半角スペース分
+    if remaining <= 0:
+        return keyphrase[:max_len]
+    return f'{keyphrase} {title[:remaining].rstrip()}'
+
+
 def build_article(product: dict) -> dict:
-    body_content = get_article_body_ai(product)
-    excerpt = _make_excerpt(product['title'])
+    focus_keyphrase = _build_focus_keyphrase(product)
+    body_content = get_article_body_ai(product, focus_keyphrase)
+    seo_title = _build_seo_title(product, keyphrase=focus_keyphrase, max_len=32)
+    # メタディスクリプション・抜粋の冒頭にキーフレーズを含める
+    # （Yoastの「メタディスクリプション中のキーフレーズ」チェック対策）。
+    _base_excerpt = _make_excerpt(product['title'], max_len=150)
+    if focus_keyphrase and focus_keyphrase not in _base_excerpt:
+        excerpt = _make_excerpt(f'{focus_keyphrase}｜{product["title"]}', max_len=150)
+    else:
+        excerpt = _base_excerpt
     overview_html = _paragraphs_to_html(body_content['overview'])
     points_html = _points_list_html(body_content['points'])
     genre_badges_html = _genre_badges_html(product.get('genres', []))
     star_html = _star_rating_html(product.get('review_avg'), product.get('review_count'))
     gallery_html = _sample_gallery_html(
-        product.get('affiliate_url', ''), product.get('sample_images', []), product.get('title', '')
+        product.get('affiliate_url', ''), product.get('sample_images', []), product.get('title', ''),
+        focus_keyphrase
     )
 
     meta_line_parts = []
@@ -550,6 +622,15 @@ def build_article(product: dict) -> dict:
         '※成人向けコンテンツを含みます。18歳未満の方はご利用いただけません。</p>'
     )
 
+    internal_link_html = ''
+    if WP_URL:
+        cat_label = '同人' if CONTENT_TYPE == 'doujin' else '動画'
+        internal_link_html = (
+            f'<p style="font-size:13px;margin-top:14px;">'
+            f'<a href="{escape(WP_URL)}/category/{cat_label}/">'
+            f'他の{cat_label}作品もチェックする →</a></p>'
+        )
+
     card_inner = '\n'.join(
         part for part in [
             meta_line_html,
@@ -560,6 +641,7 @@ def build_article(product: dict) -> dict:
             points_html,
             gallery_html,
             cta_html,
+            internal_link_html,
             disclaimer_html,
         ] if part
     )
@@ -574,12 +656,10 @@ def build_article(product: dict) -> dict:
     # タグはジャンルをフィルタなしでそのまま使用（検索性重視）。
     # avの場合は出演者名もタグに追加する。
     tag_source = list(product['genres']) if product['genres'] else []
-    if CONTENT_TYPE == 'av' and product.get('actresses'):
-        tag_source = tag_source + list(product['actresses'])
+    if CONTENT_TYPE == 'av' and product.get('actors'):
+        tag_source = tag_source + list(product['actors'])
 
-    focus_keyphrase = _build_focus_keyphrase(product, max_words=5)
-
-    # カテゴリーは「同人」または「動画」の1つだけを使う（ジャンルはカテゴリーに含めない）。
+    # カテゴリーは「同人」または「動画」の1つだけを使う（ジャンルはカテゴリーに含めない、PRは付与しない）。
     display_category_label = '同人' if CONTENT_TYPE == 'doujin' else '動画'
 
     return {
@@ -592,6 +672,7 @@ def build_article(product: dict) -> dict:
         'featured_image_url': product.get('package_image', ''),
         'content_id':        product.get('content_id', ''),
         'focus_keyphrase':   focus_keyphrase,
+        'seo_title':         seo_title,
     }
 
 
@@ -746,13 +827,22 @@ def post_draft_to_wordpress(article: dict) -> bool:
         'tags':       tag_ids,
     }
 
-    # Yoast SEOの「フォーカスキーフレーズ」を投稿と同時に設定する。
-    # ※ WordPress側で '_yoast_wpseo_focuskw' メタフィールドが
-    #   register_post_meta() 等でREST APIに公開されている必要がある
-    #   （下記コメント参照。未対応の場合はこのmetaは保存されない）。
+    # Yoast SEOの「フォーカスキーフレーズ」「SEOタイトル」「メタディスクリプション」を
+    # 投稿と同時に設定する。
+    # ※ WordPress側で '_yoast_wpseo_focuskw' / '_yoast_wpseo_title' / '_yoast_wpseo_metadesc'
+    #   メタフィールドが register_post_meta() 等でREST APIに公開されている必要がある。
+    meta = {}
     focus_keyphrase = article.get('focus_keyphrase') or ''
     if focus_keyphrase:
-        payload['meta'] = {'_yoast_wpseo_focuskw': focus_keyphrase}
+        meta['_yoast_wpseo_focuskw'] = focus_keyphrase
+    seo_title = article.get('seo_title') or ''
+    if seo_title:
+        meta['_yoast_wpseo_title'] = seo_title
+    metadesc = article.get('excerpt') or ''
+    if metadesc:
+        meta['_yoast_wpseo_metadesc'] = metadesc
+    if meta:
+        payload['meta'] = meta
 
     # アイキャッチ画像（featured_media）を設定する。
     # 本文側からは同じ画像を削除したので、重複表示にはならない。
