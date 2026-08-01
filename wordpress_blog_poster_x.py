@@ -16,7 +16,7 @@ import os
 #    どのバージョンのコードで生成された投稿かを確認できるようにする。
 #    コードを修正するたびに、この日付/番号を更新すること。
 # ================================================================
-SCRIPT_VERSION = '2026-08-01-01'
+SCRIPT_VERSION = '2026-08-01-02'
 import re
 import sys
 import json
@@ -339,6 +339,8 @@ def _get_article_body_from_api(product: dict, focus_keyphrase: str = '') -> dict
         f"{keyphrase_instruction}"
         "- 文体はユーモラスで軽快に。読者にニヤッとしてもらえるような比喩・ツッコミ・\n"
         "  軽い自虐やボケを交えてよい（下品・侮辱的にはしない）\n"
+        "- 文章の読みやすさのため、「さらに」「また」「そのため」「つまり」「一方で」\n"
+        "  「ちなみに」などの転換語（接続表現）を、文全体の2〜3割程度の文の先頭に使う\n"
         "- 『買わない理由が見当たらない』『気づいたらカートに入れている』のような、\n"
         "  読者の背中を押す一言をOVERVIEWの締めに入れる\n"
         "- ただし『業界No.1』『絶対』『必ず満足』など、検証不可能な断定・優良誤認の\n"
@@ -414,23 +416,23 @@ def _get_article_body_template(product: dict, focus_keyphrase: str = '') -> dict
     else:
         overview = f"{genre_str}系の{work_kind}です。"
     if product.get('maker'):
-        overview += f" 手がけるのは{product['maker']}。"
+        overview += f" ちなみに、手がけるのは{product['maker']}。"
     if product.get('price'):
-        overview += f" 価格は{product['price']}で、この内容ならコスパも十分満足できるはずです。"
+        overview += f" さらに価格は{product['price']}なので、この内容ならコスパも十分満足できるはずです。"
     if product.get('genres'):
         overview += (
-            f" {genre_str}といったジャンルが好きな方はもちろん、"
-            "普段あまりこの手のジャンルを見ない方にも新鮮に映る一本です。"
+            f" つまり、{genre_str}といったジャンルが好きな方はもちろん、"
+            "普段あまりこの手のジャンルを見ない方にも新鮮に映る一本というわけです。"
         )
     closer = _OVERVIEW_CLOSERS_PICK(product)
-    overview += f"\n\n{closer}"
+    overview += f"\n\nそのため、{closer}"
 
     points = []
     for i, g in enumerate((product.get('genres') or [])[:4]):
         tmpl = _GENRE_POINT_TEMPLATES[i % len(_GENRE_POINT_TEMPLATES)]
         points.append(tmpl.format(g=g))
     if product.get('review_avg') and product.get('review_count'):
-        points.append(f"レビュー平均{product['review_avg']}点（{product['review_count']}件）と、みんなも太鼓判")
+        points.append(f"また、レビュー平均{product['review_avg']}点（{product['review_count']}件）と、みんなも太鼓判")
     if not points:
         points = ['作品ページを開いた時点で、もう半分ハマっています']
 
@@ -438,7 +440,7 @@ def _get_article_body_template(product: dict, focus_keyphrase: str = '') -> dict
     # （Yoastの「キーフレーズ分布（最低2回）」チェック対策）。
     # 5件上限で切り捨てられないよう、既に5件ある場合は末尾と差し替える。
     if focus_keyphrase:
-        keyphrase_point = f"「{focus_keyphrase}」が気になった方は、ぜひ作品ページもチェックしてみてください"
+        keyphrase_point = f"なお、「{focus_keyphrase}」が気になった方は、ぜひ作品ページもチェックしてみてください"
         if len(points) >= 5:
             points[4] = keyphrase_point
         else:
