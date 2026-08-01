@@ -475,10 +475,13 @@ def _sample_gallery_html(affiliate_url: str, sample_images: list, title: str, fo
     imgs = [u for u in (sample_images or []) if u][:8]
     if not imgs:
         return ''
-    # altテキストにフォーカスキーフレーズを含める（Yoastの「画像のalt属性のキーフレーズ」対策）
-    alt_text = f'{focus_keyphrase} {title} サンプル画像' if focus_keyphrase else f'{title} サンプル画像'
+    # altテキストにフォーカスキーフレーズを含めるのは最初の1枚だけにする
+    # （全画像に同じキーフレーズを詰め込むとYoastの「キーフレーズの過剰使用」警告になるため）
+    plain_alt = f'{title} サンプル画像'
+    keyphrase_alt = f'{focus_keyphrase} {title} サンプル画像' if focus_keyphrase else plain_alt
     cells = []
-    for url in imgs:
+    for i, url in enumerate(imgs):
+        alt_text = keyphrase_alt if i == 0 else f'{plain_alt}{i + 1}'
         cells.append(
             f'<a href="{escape(affiliate_url)}" target="_blank" rel="nofollow" class="ona-sample-cell">'
             f'<img src="{escape(url)}" alt="{escape(alt_text)}" loading="lazy" class="ona-sample-img"></a>'
@@ -577,9 +580,9 @@ def build_article(product: dict) -> dict:
     seo_title = _build_seo_title(product, keyphrase=focus_keyphrase, max_len=20)
     # メタディスクリプション・抜粋の冒頭にキーフレーズを含める
     # （Yoastの「メタディスクリプション中のキーフレーズ」チェック対策）。
-    _base_excerpt = _make_excerpt(product['title'], max_len=80)
+    _base_excerpt = _make_excerpt(product['title'], max_len=70)
     if focus_keyphrase and focus_keyphrase not in _base_excerpt:
-        excerpt = _make_excerpt(f'{focus_keyphrase}｜{product["title"]}', max_len=80)
+        excerpt = _make_excerpt(f'{focus_keyphrase}｜{product["title"]}', max_len=70)
     else:
         excerpt = _base_excerpt
     overview_html = _paragraphs_to_html(body_content['overview'])
@@ -611,7 +614,6 @@ def build_article(product: dict) -> dict:
 
     overview_section_html = (
         '<div style="margin-top:14px;">'
-        '<div style="font-weight:bold;color:#555;margin-bottom:6px;font-size:14px;">作品概要</div>'
         f'{overview_html}</div>'
     )
 
