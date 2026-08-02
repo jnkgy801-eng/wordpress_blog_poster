@@ -224,14 +224,43 @@ def _build_affiliate_url(raw_url: str) -> str:
     """
     if not raw_url:
         return ''
-    encoded = urllib.parse.quote(raw_url, safe='')
+    # utm_* パラメータ（アフィリエイト計測とは無関係）は取り除いてからlurlに使う
+    parsed = urllib.parse.urlsplit(raw_url)
+    clean_query = '&'.join(
+        kv for kv in parsed.query.split('&')
+        if kv and not kv.startswith('utm_')
+    )
+    clean_url = urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, clean_query, '')
+    )
+    encoded = urllib.parse.quote(clean_url, safe='')
     return f'https://al.dmm.co.jp/?lurl={encoded}&af_id={DMM_AFFILIATE_ID}&ch=api&ch_id=link'
+
+
+def _resolve_affiliate_url(item: dict) -> str:
+    """DMM APIが返す 'affiliateURL' を、そのまま信用せずに検証する。
+
+    同人カテゴリ等: 'affiliateURL' が空で返ってくることがある。
+    AV(video.dmm.co.jp)等: 'affiliateURL' が空ではないが、中身が
+        utm_*パラメータだけの計測なしURL（al.dmm.co.jpを経由していない）
+        のまま返ってくることがある。
+    どちらの場合も、クリックされてもアフィリエイト報酬が発生しない生リンクに
+    なってしまうため、'al.dmm.co.jp' を経由した正しい形式でなければ、
+    自前で組み立て直す。
+    """
+    raw_affiliate = item.get('affiliateURL', '')
+    if raw_affiliate and 'al.dmm.co.jp' in raw_affiliate:
+        return raw_affiliate
+    # affiliateURLが空、または計測なしの生リンクだった場合は、
+    # 手元にあるURL（affiliateURLかURLフィールド）から正しい形式を組み立て直す
+    fallback_source = raw_affiliate or item.get('URL', '')
+    return _build_affiliate_url(fallback_source)
 
 
 def parse_product(item):
     content_id    = item.get('content_id', '') or item.get('product_id', '')
     title         = _strip_redundant_title_prefix(item.get('title', ''))
-    affiliate_url = item.get('affiliateURL', '') or _build_affiliate_url(item.get('URL', ''))
+    affiliate_url = _resolve_affiliate_url(item)
     prices        = item.get('prices', {})
     price_str, price_num = '', None
     if prices:
