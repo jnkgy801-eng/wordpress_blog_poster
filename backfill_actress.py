@@ -43,7 +43,7 @@ AV_CATEGORY_NAME = '動画'
 
 # True のうちは実際の更新を行わず、対象件数と取得予定の出演者名だけを表示する。
 # 内容を確認できたら False にして再実行する。
-DRY_RUN = True
+DRY_RUN = False
 
 # DMM APIへの過度なリクエストを避けるための待機秒数
 SLEEP_SECONDS = 0.5
