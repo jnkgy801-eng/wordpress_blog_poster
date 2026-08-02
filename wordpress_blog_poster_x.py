@@ -16,7 +16,7 @@ import os
 #    どのバージョンのコードで生成された投稿かを確認できるようにする。
 #    コードを修正するたびに、この日付/番号を更新すること。
 # ================================================================
-SCRIPT_VERSION = '2026-08-01-02'
+SCRIPT_VERSION = '2026-08-02-01'
 import re
 import sys
 import json
@@ -702,11 +702,10 @@ def build_article(product: dict) -> dict:
         f'{card_inner}</div>'
     )
 
-    # タグはジャンルをフィルタなしでそのまま使用（検索性重視）。
-    # avの場合は出演者名もタグに追加する。
+    # タグはジャンルのみ（フィルタなしでそのまま使用、検索性重視）。
+    # 出演者名は専用タクソノミー（onavi_actress）に登録するため、タグには含めない。
     tag_source = list(product['genres']) if product['genres'] else []
-    if CONTENT_TYPE == 'av' and product.get('actors'):
-        tag_source = tag_source + list(product['actors'])
+    actor_source = list(product['actors']) if (CONTENT_TYPE == 'av' and product.get('actors')) else []
 
     # カテゴリーは「同人」または「動画」の1つだけを使う（ジャンルはカテゴリーに含めない、PRは付与しない）。
     display_category_label = '同人' if CONTENT_TYPE == 'doujin' else '動画'
@@ -717,6 +716,7 @@ def build_article(product: dict) -> dict:
         'excerpt':           excerpt,
         'body':              body_html,
         'tags':              tag_source,
+        'actors':            actor_source,
         'category_label':    display_category_label,
         'featured_image_url': product.get('package_image', ''),
         'content_id':        product.get('content_id', ''),
@@ -731,6 +731,7 @@ def build_article(product: dict) -> dict:
 
 _category_cache = {}   # name -> id
 _tag_cache = {}        # name -> id
+_actress_cache = {}    # name -> id（onavi_actress タクソノミー用）
 
 
 def _wp_auth():
@@ -1017,6 +1018,17 @@ def post_draft_to_wordpress(article: dict):
         if tid and tid not in tag_ids:
             tag_ids.append(tid)
 
+    # 出演者（avのみ）は専用タクソノミー「onavi_actress」に登録する。
+    # ※ WordPress側で register_taxonomy() により rest_base='onavi_actress' として
+    #   REST APIに公開されている必要がある（未対応の場合はこの項目は無視される）。
+    actress_ids = []
+    for actor_name in article.get('actors', []):
+        if not actor_name:
+            continue
+        aid = _get_or_create_term('onavi_actress', actor_name, _actress_cache)
+        if aid and aid not in actress_ids:
+            actress_ids.append(aid)
+
     payload = {
         'title':      article['title'],
         'slug':       article.get('slug') or '',
@@ -1026,6 +1038,8 @@ def post_draft_to_wordpress(article: dict):
         'categories': category_ids,
         'tags':       tag_ids,
     }
+    if actress_ids:
+        payload['onavi_actress'] = actress_ids
 
     # Yoast SEOの「フォーカスキーフレーズ」「SEOタイトル」「メタディスクリプション」を
     # 投稿と同時に設定する。
