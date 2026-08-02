@@ -21,6 +21,7 @@ import re
 import sys
 import json
 import datetime
+import urllib.parse
 import requests
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -240,10 +241,24 @@ def _strip_redundant_title_prefix(title: str) -> str:
     return _TITLE_PREFIX_RE.sub('', title, count=1).strip()
 
 
+def _build_affiliate_url(raw_url: str) -> str:
+    """DMM APIのレスポンスに 'affiliateURL' が含まれない商品（同人カテゴリ等で
+    まれに発生）向けに、計測付きの正しいアフィリエイトリンク（al.dmm.co.jp形式）を
+    自前で組み立てる。
+    ここを経由しないと、'URL' フィールド（utm_*パラメータ付きだが
+    アフィリエイト計測は乗っていない生リンク）がそのまま使われてしまい、
+    クリックされても報酬が一切発生しない、という不具合になる。
+    """
+    if not raw_url:
+        return ''
+    encoded = urllib.parse.quote(raw_url, safe='')
+    return f'https://al.dmm.co.jp/?lurl={encoded}&af_id={DMM_AFFILIATE_ID}&ch=api&ch_id=link'
+
+
 def parse_product(item):
     content_id    = item.get('content_id', '') or item.get('product_id', '')
     title         = _strip_redundant_title_prefix(item.get('title', ''))
-    affiliate_url = item.get('affiliateURL', '') or item.get('URL', '')
+    affiliate_url = item.get('affiliateURL', '') or _build_affiliate_url(item.get('URL', ''))
     prices        = item.get('prices', {})
     price_str, price_num = '', None
     if prices:
