@@ -249,7 +249,11 @@ def _resolve_affiliate_url(item: dict) -> str:
     自前で組み立て直す。
     """
     raw_affiliate = item.get('affiliateURL', '')
-    if raw_affiliate and 'al.dmm.co.jp' in raw_affiliate:
+    # DMM APIは商品によって、正しい計測付きリンクを 'al.dmm.co.jp' ではなく
+    # 'al.fanza.co.jp' というドメインで返してくることがある。
+    # ここを見落とすと、すでに正しいリンクをもう一度 al.dmm.co.jp で
+    # 二重に包んでしまい（lurlの中にlurlが入れ子になる）、404の原因になる。
+    if raw_affiliate and ('al.dmm.co.jp' in raw_affiliate or 'al.fanza.co.jp' in raw_affiliate):
         return raw_affiliate
     # affiliateURLが空、または計測なしの生リンクだった場合は、
     # 手元にあるURL（affiliateURLかURLフィールド）から正しい形式を組み立て直す
