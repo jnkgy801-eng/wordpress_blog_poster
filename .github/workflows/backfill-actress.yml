@@ -1,0 +1,45 @@
+name: Backfill Actress Taxonomy
+
+# 手動実行専用（一度きりのバックフィル処理のため、スケジュール実行は行わない）。
+# Actionsタブ → 左メニュー「Backfill Actress Taxonomy」→「Run workflow」から実行する。
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "true: 確認のみ（更新しない） / false: 実際に更新する"
+        required: true
+        default: "true"
+        type: choice
+        options:
+          - "true"
+          - "false"
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Apply DRY_RUN setting from input
+        run: |
+          if [ "${{ inputs.dry_run }}" = "false" ]; then
+            sed -i "s/^DRY_RUN = True/DRY_RUN = False/" backfill_actress.py
+          fi
+
+      - name: Run backfill script
+        env:
+          DMM_API_ID: ${{ secrets.DMM_API_ID }}
+          DMM_AFFILIATE_ID: ${{ secrets.DMM_AFFILIATE_ID }}
+          WP_URL: ${{ secrets.WP_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+        run: python3 backfill_actress.py
