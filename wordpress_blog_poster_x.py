@@ -463,6 +463,9 @@ def _get_article_body_template(product: dict, focus_keyphrase: str = '') -> dict
         overview = f"「{focus_keyphrase}」に注目の{work_kind}。{genre_str}系の内容です。"
     else:
         overview = f"{genre_str}系の{work_kind}です。"
+    if product.get('actors') and CONTENT_TYPE == 'av':
+        actor_str = '、'.join(product['actors'])
+        overview += f" 出演しているのは{actor_str}。この時点でもう見る理由は十分揃っています。"
     if product.get('maker'):
         overview += f" ちなみに、手がけるのは{product['maker']}。"
     if product.get('price'):
@@ -471,6 +474,16 @@ def _get_article_body_template(product: dict, focus_keyphrase: str = '') -> dict
         overview += (
             f" つまり、{genre_str}といったジャンルが好きな方はもちろん、"
             "普段あまりこの手のジャンルを見ない方にも新鮮に映る一本というわけです。"
+        )
+    if product.get('sample_images'):
+        overview += (
+            f" サンプル画像だけでも見応え十分なので、まずは雰囲気だけでもチェックしてみると"
+            "早いかもしれません。"
+        )
+    if product.get('review_avg') and product.get('review_count'):
+        overview += (
+            f" 実際、レビューでも平均{product['review_avg']}点（{product['review_count']}件）と評価は上々で、"
+            "すでに多くの人がその魅力に気づいている一本です。"
         )
     closer = _OVERVIEW_CLOSERS_PICK(product)
     overview += f"\n\nそのため、{closer}"
@@ -481,20 +494,22 @@ def _get_article_body_template(product: dict, focus_keyphrase: str = '') -> dict
         points.append(tmpl.format(g=g))
     if product.get('review_avg') and product.get('review_count'):
         points.append(f"また、レビュー平均{product['review_avg']}点（{product['review_count']}件）と、みんなも太鼓判")
+    if product.get('maker'):
+        points.append(f"制作は{product['maker']}。安定した仕上がりも安心材料のひとつです")
     if not points:
         points = ['作品ページを開いた時点で、もう半分ハマっています']
 
     # 本文中でもう一度フォーカスキーフレーズに触れる
     # （Yoastの「キーフレーズ分布（最低2回）」チェック対策）。
-    # 5件上限で切り捨てられないよう、既に5件ある場合は末尾と差し替える。
+    # 6件上限で切り捨てられないよう、既に6件ある場合は末尾と差し替える。
     if focus_keyphrase:
         keyphrase_point = f"なお、「{focus_keyphrase}」が気になった方は、ぜひ作品ページもチェックしてみてください"
-        if len(points) >= 5:
-            points[4] = keyphrase_point
+        if len(points) >= 6:
+            points[5] = keyphrase_point
         else:
             points.append(keyphrase_point)
 
-    return {'overview': overview, 'points': points[:5]}
+    return {'overview': overview, 'points': points[:6]}
 
 
 def _OVERVIEW_CLOSERS_PICK(product: dict) -> str:
@@ -563,13 +578,14 @@ def _sample_gallery_html(affiliate_url: str, sample_images: list, title: str, fo
     imgs = [u for u in (sample_images or []) if u][:8]
     if not imgs:
         return ''
-    # altテキストにフォーカスキーフレーズを含めるのは最初の1枚だけにする
-    # （全画像に同じキーフレーズを詰め込むとYoastの「キーフレーズの過剰使用」警告になるため）
-    plain_alt = f'{title} サンプル画像'
-    keyphrase_alt = f'{focus_keyphrase} {title} サンプル画像' if focus_keyphrase else plain_alt
+    # altテキストにフォーカスキーフレーズ（や、それと重なりがちな作品タイトル）を
+    # 含めるのは最初の1枚だけにする。
+    # 2枚目以降はタイトルも繰り返さず「サンプル画像2」のような汎用文言にすることで、
+    # Yoastの「キーフレーズ（や同義語）の過剰使用」警告を避ける。
+    keyphrase_alt = f'{focus_keyphrase} {title} サンプル画像' if focus_keyphrase else f'{title} サンプル画像'
     cells = []
     for i, url in enumerate(imgs):
-        alt_text = keyphrase_alt if i == 0 else f'{plain_alt}{i + 1}'
+        alt_text = keyphrase_alt if i == 0 else f'サンプル画像{i + 1}'
         cells.append(
             f'<a href="{escape(affiliate_url)}" target="_blank" rel="nofollow" class="ona-sample-cell">'
             f'<img src="{escape(url)}" alt="{escape(alt_text)}" loading="lazy" class="ona-sample-img"></a>'
@@ -668,9 +684,11 @@ def build_article(product: dict) -> dict:
     seo_title = _build_seo_title(product, keyphrase=focus_keyphrase, max_len=20)
     # メタディスクリプション・抜粋の冒頭にキーフレーズを含める
     # （Yoastの「メタディスクリプション中のキーフレーズ」チェック対策）。
-    _base_excerpt = _make_excerpt(product['title'], max_len=70)
+    # 文字数は、Yoastが日本語（全角）を長めにカウントする傾向があるため、
+    # 「80文字を超えています」という警告が出ないよう余裕を持たせて55文字までに抑える。
+    _base_excerpt = _make_excerpt(product['title'], max_len=55)
     if focus_keyphrase and focus_keyphrase not in _base_excerpt:
-        excerpt = _make_excerpt(f'{focus_keyphrase}｜{product["title"]}', max_len=70)
+        excerpt = _make_excerpt(f'{focus_keyphrase}｜{product["title"]}', max_len=55)
     else:
         excerpt = _base_excerpt
     overview_html = _paragraphs_to_html(body_content['overview'])
