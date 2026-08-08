@@ -1,0 +1,85 @@
+name: Post New Articles
+
+# DMM APIから新作を取得し、記事をWordPressに下書き/公開投稿するワークフロー。
+# 毎日決まった時刻に自動実行しつつ、手動実行（workflow_dispatch）でも動かせるようにしてある。
+
+on:
+  schedule:
+    # 毎日 JST 9:00（= UTC 0:00）に実行。cronはUTC基準。
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      content_type:
+        description: '対象コンテンツ種別'
+        required: true
+        default: 'doujin'
+        type: choice
+        options:
+          - doujin
+          - av
+      wp_post_status:
+        description: '投稿ステータス（publishは目視確認なしで即公開されるので注意）'
+        required: true
+        default: 'draft'
+        type: choice
+        options:
+          - draft
+          - pending
+          - publish
+      max_articles:
+        description: '1回の実行で投稿する記事数の上限'
+        required: false
+        default: '5'
+
+concurrency:
+  group: post-new-articles-${{ github.event.inputs.content_type || 'doujin' }}
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python環境をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 依存パッケージをインストール
+        run: pip install requests
+
+      # 投稿済み履歴（outputs/posted_history.json）を前回実行から引き継ぐ。
+      # これがないと、実行のたびに同じ商品を重複投稿してしまう可能性がある。
+      - name: 投稿履歴を復元
+        uses: actions/cache@v4
+        with:
+          path: outputs/posted_history.json
+          key: posted-history-${{ github.event.inputs.content_type || 'doujin' }}-${{ github.run_id }}
+          restore-keys: |
+            posted-history-${{ github.event.inputs.content_type || 'doujin' }}-
+
+      - name: 記事投稿スクリプトを実行
+        env:
+          DMM_API_ID:        ${{ secrets.DMM_API_ID }}
+          DMM_AFFILIATE_ID:  ${{ secrets.DMM_AFFILIATE_ID }}
+          WP_URL:            ${{ secrets.WP_URL }}
+          WP_USERNAME:       ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD:   ${{ secrets.WP_APP_PASSWORD }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CONTENT_TYPE:      ${{ github.event.inputs.content_type || 'doujin' }}
+          WP_POST_STATUS:    ${{ github.event.inputs.wp_post_status || 'draft' }}
+          MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '5' }}
+        run: python wordpress_blog_poster.py
+
+      - name: 実行ログ・履歴・除外ログをアーティファクトとして保存
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-outputs-${{ github.event.inputs.content_type || 'doujin' }}-${{ github.run_id }}
+          path: outputs/
+          if-no-files-found: ignore
+          retention-days: 14
