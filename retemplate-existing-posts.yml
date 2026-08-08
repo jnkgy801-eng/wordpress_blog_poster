@@ -1,0 +1,83 @@
+name: Retemplate Existing Posts
+
+# 既存記事の本文を新テンプレートで再生成し、WordPressを更新するワークフロー。
+# 手動実行（workflow_dispatch）専用。安全のため、まずは dry_run=true・件数少なめで
+# 内容を確認してから、dry_run=false で本番反映することを推奨します。
+
+on:
+  workflow_dispatch:
+    inputs:
+      content_type:
+        description: '対象コンテンツ種別'
+        required: true
+        default: 'doujin'
+        type: choice
+        options:
+          - doujin
+          - av
+      dry_run:
+        description: 'true にすると実際の更新は行わず、生成内容の確認のみ行う'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      max_update:
+        description: '1回の実行で処理する記事数の上限'
+        required: true
+        default: '10'
+
+# 同時に複数実行して同じ記事を取り合わないようにする
+concurrency:
+  group: retemplate-existing-posts-${{ github.event.inputs.content_type }}
+  cancel-in-progress: false
+
+jobs:
+  retemplate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Python環境をセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 依存パッケージをインストール
+        run: pip install requests
+
+      # 更新済み履歴（outputs/retemplate_history.json）を前回実行から引き継ぐ。
+      # これがないと、実行のたびに同じ記事を何度も再生成・更新してしまう。
+      - name: 更新履歴を復元
+        uses: actions/cache@v4
+        with:
+          path: outputs/retemplate_history.json
+          key: retemplate-history-${{ github.event.inputs.content_type }}-${{ github.run_id }}
+          restore-keys: |
+            retemplate-history-${{ github.event.inputs.content_type }}-
+
+      - name: 再テンプレート化スクリプトを実行
+        env:
+          DMM_API_ID:        ${{ secrets.DMM_API_ID }}
+          DMM_AFFILIATE_ID:  ${{ secrets.DMM_AFFILIATE_ID }}
+          WP_URL:            ${{ secrets.WP_URL }}
+          WP_USERNAME:       ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD:   ${{ secrets.WP_APP_PASSWORD }}
+          CONTENT_TYPE:      ${{ github.event.inputs.content_type }}
+          DRY_RUN:           ${{ github.event.inputs.dry_run }}
+          MAX_UPDATE:        ${{ github.event.inputs.max_update }}
+        run: python wordpress_retemplate_existing_posts.py
+
+      # dry_runの結果や更新ログを、実行後に確認できるようアーティファクトとして保存
+      - name: 実行ログ・履歴をアーティファクトとして保存
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: retemplate-outputs-${{ github.event.inputs.content_type }}-${{ github.run_id }}
+          path: outputs/
+          if-no-files-found: ignore
+          retention-days: 14
