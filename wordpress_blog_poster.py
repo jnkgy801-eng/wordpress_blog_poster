@@ -359,7 +359,10 @@ def _get_article_body_from_api(product: dict, focus_keyphrase: str = '') -> dict
         "- 文体はユーモラスで軽快に。読者にニヤッとしてもらえるような比喩・ツッコミ・\n"
         "  軽い自虐やボケを交えてよい（下品・侮辱的にはしない）\n"
         "- 文章の読みやすさのため、「さらに」「また」「そのため」「つまり」「一方で」\n"
-        "  「ちなみに」などの転換語（接続表現）を、文全体の2〜3割程度の文の先頭に使う\n"
+        "  「ちなみに」「実際」「なぜなら」「ただし」などの転換語（接続表現）を、\n"
+        "  文全体の3〜4割程度の文の先頭に必ず使う（Yoast SEOの可読性チェックで\n"
+        "  『転換語が含まれる文の割合が30%未満』という警告が出ないよう、少なくとも\n"
+        "  3割は超えるようにする）\n"
         "- 『買わない理由が見当たらない』『気づいたらカートに入れている』のような、\n"
         "  読者の背中を押す一言をOVERVIEWの締めに入れる\n"
         "- ただし『業界No.1』『絶対』『必ず満足』など、検証不可能な断定・優良誤認の\n"
@@ -539,7 +542,7 @@ def _points_list_html(points: list) -> str:
     )
     return (
         '<div class="ona-points-box">'
-        '<div class="ona-points-title">✓ ここがポイント</div>'
+        '<h2 class="ona-points-title" style="margin:0 0 8px;font-size:16px;">✓ ここがポイント</h2>'
         f'<ul style="margin:0;padding-left:20px;">{items}</ul>'
         '</div>'
     )
@@ -563,7 +566,7 @@ def _sample_gallery_html(affiliate_url: str, sample_images: list, title: str, fo
         )
     return (
         '<div class="ona-sample-gallery">'
-        '<div class="ona-sample-gallery-title">作品サンプル</div>'
+        '<h3 class="ona-sample-gallery-title" style="margin:0 0 8px;font-size:15px;">作品サンプル</h3>'
         '<div class="ona-sample-grid">' + ''.join(cells) + '</div>'
         '</div>'
     )
@@ -690,7 +693,8 @@ def build_article(product: dict) -> dict:
         )
 
     overview_section_html = (
-        '<div style="margin-top:14px;">'
+        '<h2 style="margin:14px 0 8px;font-size:17px;">作品の魅力</h2>'
+        '<div>'
         f'{overview_html}</div>'
     )
 
