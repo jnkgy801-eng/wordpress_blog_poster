@@ -16,13 +16,14 @@ on:
           - doujin  # FANZA同人のみ
           - av      # FANZA動画（AV）のみ
       dmm_sort_mode:
-        description: 'ソートモード'
+        description: 'ソートモード（空欄/未指定時はスケジュール実行と同じくAV=date・同人=rankが個別適用される）'
         required: false
-        default: 'date'
+        default: ''
         type: choice
         options:
-          - rank   # 人気順
-          - date   # 新着順
+          - ''     # 未指定（AV=date・同人=rankをそれぞれ個別に適用）
+          - rank   # 人気順（両方をrankに統一）
+          - date   # 新着順（両方をdateに統一）
       price_min:
         description: '価格下限（円・空欄で制限なし）'
         required: false
@@ -34,9 +35,9 @@ on:
         default: ''
         type: string
       max_articles:
-        description: '1回の実行で投稿する記事数の上限（種別ごと）'
+        description: '1回の実行で投稿する記事数の上限（種別ごと・空欄でデフォルト5件）'
         required: false
-        default: '10'
+        default: '5'
         type: string
       wp_post_status:
         description: '投稿ステータス（publishは目視確認なしで即公開されるため要注意）'
@@ -86,8 +87,9 @@ jobs:
           PRICE_MIN:         ${{ github.event.inputs.price_min || '' }}
           PRICE_MAX:         ${{ github.event.inputs.price_max || '' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # AV（動画）は新着順（date）・5件をデフォルトとする（スケジュール実行時はこの既定値が使われる）
           DMM_SORT_MODE:     ${{ github.event.inputs.dmm_sort_mode || 'date' }}
-          MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '10' }}
+          MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '5' }}
         run: python wordpress_blog_poster.py
 
       - name: WordPressへ投稿（同人・date順・重複除外・10件になるまで検索）
@@ -103,8 +105,9 @@ jobs:
           PRICE_MIN:         ${{ github.event.inputs.price_min || '' }}
           PRICE_MAX:         ${{ github.event.inputs.price_max || '' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          DMM_SORT_MODE:     ${{ github.event.inputs.dmm_sort_mode || 'date' }}
-          MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '10' }}
+          # 同人は人気順（rank）・5件をデフォルトとする（スケジュール実行時はこの既定値が使われる）
+          DMM_SORT_MODE:     ${{ github.event.inputs.dmm_sort_mode || 'rank' }}
+          MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '5' }}
         run: python wordpress_blog_poster.py
 
       - name: 投稿履歴・除外ログをリポジトリにコミット
