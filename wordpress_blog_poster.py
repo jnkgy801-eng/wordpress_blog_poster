@@ -170,7 +170,8 @@ def product_history_key(product: dict) -> str:
 # 🔧 DMM API 関連（既存スクリプトと同じロジックを踏襲）
 # ================================================================
 
-def fetch_dmm_products(offset: int, sort: str = None, hits: int = None):
+def fetch_dmm_products(offset: int, sort: str = None, hits: int = None,
+                        gte_date: str = None, lte_date: str = None):
     params = {
         'api_id':       DMM_API_ID,
         'affiliate_id': DMM_AFFILIATE_ID,
@@ -182,6 +183,12 @@ def fetch_dmm_products(offset: int, sort: str = None, hits: int = None):
         'sort':         sort or 'rank',
         'output':       'json',
     }
+    # 発売日/配信日の範囲をDMM API側で絞り込む（未来の予約作品を最初から除外するため）。
+    # 形式は 'YYYY-MM-DDTHH:MM:SS'。
+    if gte_date:
+        params['gte_date'] = gte_date
+    if lte_date:
+        params['lte_date'] = lte_date
     try:
         resp = requests.get(f'{DMM_API_BASE}/ItemList', params=params, timeout=15)
         data = resp.json()
@@ -198,13 +205,15 @@ def fetch_dmm_products(offset: int, sort: str = None, hits: int = None):
 _TITLE_PREFIX_RE = re.compile(r'^【[^】]{1,20}】\s*')
 
 
-def fetch_rank_items(limit: int, sort: str = None) -> list:
-    """指定sort順（rank=人気順 / date=新着順）の上位limit件の生アイテム（dict）をリストで返す。"""
+def fetch_rank_items(limit: int, sort: str = None,
+                      gte_date: str = None, lte_date: str = None) -> list:
+    """指定sort順（rank=人気順 / date=新着順）・指定日付範囲内の上位limit件の
+    生アイテム（dict）をリストで返す。"""
     sort = sort or DMM_SORT_MODE
     items_out = []
     offset = 1
     while len(items_out) < limit:
-        items = fetch_dmm_products(offset, sort=sort)
+        items = fetch_dmm_products(offset, sort=sort, gte_date=gte_date, lte_date=lte_date)
         if not items:
             break
         items_out.extend(items)
@@ -1049,8 +1058,13 @@ def main():
     window_start = today - datetime.timedelta(days=DATE_WINDOW_DAYS)
     # 比較用に、実行時刻（JST）をtzなしdatetimeにしておく（DMMのdateフィールドはtz情報を持たないため）
     now_naive = now_jst.replace(tzinfo=None)
-    print(f'\n🏆 {_SORT_LABEL}（sort={DMM_SORT_MODE}）で上位{RANK_FETCH_LIMIT}件を取得します...')
-    raw_items = fetch_rank_items(RANK_FETCH_LIMIT, sort=DMM_SORT_MODE)
+    # DMM API側で発売日/配信日の範囲を絞り込み、未来の予約作品を最初から取得対象外にする
+    gte_date_str = datetime.datetime.combine(window_start, datetime.time.min).strftime('%Y-%m-%dT%H:%M:%S')
+    lte_date_str = now_naive.strftime('%Y-%m-%dT%H:%M:%S')
+    print(f'\n🏆 {_SORT_LABEL}（sort={DMM_SORT_MODE}）で上位{RANK_FETCH_LIMIT}件を取得します...'
+          f'（DMM APIへ日付範囲指定: {gte_date_str} 〜 {lte_date_str}）')
+    raw_items = fetch_rank_items(RANK_FETCH_LIMIT, sort=DMM_SORT_MODE,
+                                  gte_date=gte_date_str, lte_date=lte_date_str)
     print(f'🏆 {len(raw_items)}件を取得しました。'
           f'（対象期間: {window_start} 〜 実行日時（{now_naive}）より過去 の発売日/配信日のみ投稿対象）')
 
