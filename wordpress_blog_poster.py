@@ -88,8 +88,16 @@ print(f'📌 コンテンツ種別: {CONTENT_LABEL}（service={SERVICE}, floor={
 
 RANK_FETCH_LIMIT = int(os.environ.get('RANK_FETCH_LIMIT', '500'))
 DATE_WINDOW_DAYS = int(os.environ.get('DATE_WINDOW_DAYS', '14'))
-print(f'📌 rank順（人気順）上位{RANK_FETCH_LIMIT}件を取得し、'
-      f'発売日/配信日が今日から過去{DATE_WINDOW_DAYS}日以内の作品のみ投稿対象にします。')
+
+# DMM APIへ渡すsortパラメータ。rank（人気順）/ date（新着順）から選択。
+DMM_SORT_MODE = os.environ.get('DMM_SORT_MODE', 'rank').strip().lower()
+if DMM_SORT_MODE not in ('rank', 'date'):
+    print(f'⚠️ DMM_SORT_MODE="{DMM_SORT_MODE}" は不明な値です。rank にフォールバックします。')
+    DMM_SORT_MODE = 'rank'
+_SORT_LABEL = {'rank': '人気順', 'date': '新着順'}[DMM_SORT_MODE]
+
+print(f'📌 {_SORT_LABEL}（sort={DMM_SORT_MODE}）で上位{RANK_FETCH_LIMIT}件を取得し、'
+      f'発売日/配信日が実行日時より過去（今日から過去{DATE_WINDOW_DAYS}日以内）の作品のみ投稿対象にします。')
 
 # 価格フィルタ（円）。未設定なら制限なし。price_numが取得できない商品は対象外にはしない。
 def _parse_price_env(name: str):
@@ -190,12 +198,13 @@ def fetch_dmm_products(offset: int, sort: str = None, hits: int = None):
 _TITLE_PREFIX_RE = re.compile(r'^【[^】]{1,20}】\s*')
 
 
-def fetch_rank_items(limit: int) -> list:
-    """rank順（人気順）の上位limit件の生アイテム（dict）をリストで返す。"""
+def fetch_rank_items(limit: int, sort: str = None) -> list:
+    """指定sort順（rank=人気順 / date=新着順）の上位limit件の生アイテム（dict）をリストで返す。"""
+    sort = sort or DMM_SORT_MODE
     items_out = []
     offset = 1
     while len(items_out) < limit:
-        items = fetch_dmm_products(offset, sort='rank')
+        items = fetch_dmm_products(offset, sort=sort)
         if not items:
             break
         items_out.extend(items)
@@ -1035,12 +1044,15 @@ def main():
     posted_history = load_posted_history()
     print(f'📚 投稿済み履歴: {len(posted_history)}件')
 
-    today = datetime.datetime.now(JST).date()
+    now_jst = datetime.datetime.now(JST)
+    today = now_jst.date()
     window_start = today - datetime.timedelta(days=DATE_WINDOW_DAYS)
-    print(f'\n🏆 rank順（人気順）上位{RANK_FETCH_LIMIT}件を取得します...')
-    raw_items = fetch_rank_items(RANK_FETCH_LIMIT)
-    print(f'🏆 rank順 {len(raw_items)}件を取得しました。'
-          f'（対象期間: {window_start} 〜 {today} の発売日/配信日のみ投稿対象）')
+    # 比較用に、実行時刻（JST）をtzなしdatetimeにしておく（DMMのdateフィールドはtz情報を持たないため）
+    now_naive = now_jst.replace(tzinfo=None)
+    print(f'\n🏆 {_SORT_LABEL}（sort={DMM_SORT_MODE}）で上位{RANK_FETCH_LIMIT}件を取得します...')
+    raw_items = fetch_rank_items(RANK_FETCH_LIMIT, sort=DMM_SORT_MODE)
+    print(f'🏆 {len(raw_items)}件を取得しました。'
+          f'（対象期間: {window_start} 〜 実行日時（{now_naive}）より過去 の発売日/配信日のみ投稿対象）')
 
     safe_products = []
     seen_in_run = set()
@@ -1065,10 +1077,16 @@ def main():
             all_skipped.append((product, matched))
             continue
 
-        # 発売日/配信日が「今日から過去DATE_WINDOW_DAYS日以内」の作品のみを対象にする
-        # （未来日＝未配信の予約作品も、この時点で自動的に対象外になる）
+        # 発売日/配信日が「実行日時（now）より過去」かつ「今日から過去DATE_WINDOW_DAYS日以内」の
+        # 作品のみを対象にする。
+        # ・実行日時より未来（＝当日中でもまだ配信/発売されていない予約作品）は自動的に対象外になる
+        # ・window_startより古い作品も対象外になる
         product_date = _parse_dmm_date(product.get('date', ''))
-        if product_date is None or not (window_start <= product_date.date() <= today):
+        if (
+            product_date is None
+            or product_date > now_naive
+            or product_date.date() < window_start
+        ):
             out_of_window_skipped.append(product)
             continue
 
@@ -1110,7 +1128,7 @@ def main():
         sys.exit(0)
 
     if len(safe_products) < MAX_ARTICLES:
-        print(f'⚠️ rank順上位{RANK_FETCH_LIMIT}件・対象期間{DATE_WINDOW_DAYS}日以内の中では'
+        print(f'⚠️ {_SORT_LABEL}上位{RANK_FETCH_LIMIT}件・対象期間{DATE_WINDOW_DAYS}日以内の中では'
               f'{MAX_ARTICLES}件に届きませんでした。集まった{len(safe_products)}件のみ投稿します。')
 
     posted = 0
