@@ -88,7 +88,7 @@ jobs:
           PRICE_MAX:         ${{ github.event.inputs.price_max || '' }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # AV（動画）は新着順（date）・5件をデフォルトとする（スケジュール実行時はこの既定値が使われる）
-          DMM_SORT_MODE:     ${{ github.event.inputs.dmm_sort_mode || 'date' }}
+          DMM_SORT_MODE:     ${{ github.event.inputs.dmm_sort_mode || 'rank' }}
           MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '5' }}
         run: python wordpress_blog_poster.py
 
