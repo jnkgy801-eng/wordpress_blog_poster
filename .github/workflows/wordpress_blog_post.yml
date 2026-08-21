@@ -42,7 +42,7 @@ on:
       wp_post_status:
         description: '投稿ステータス（publishは目視確認なしで即公開されるため要注意）'
         required: false
-        default: 'publish'
+        default: 'draft'
         type: choice
         options:
           - publish  # 本公開（自動で即公開・デフォルト）
