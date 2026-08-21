@@ -800,6 +800,7 @@ def build_article(product: dict) -> dict:
         'content_id':        product.get('content_id', ''),
         'focus_keyphrase':   focus_keyphrase,
         'seo_title':         seo_title,
+        'affiliate_url':     product.get('affiliate_url', ''),
     }
 
 
@@ -984,6 +985,14 @@ def post_draft_to_wordpress(article: dict) -> bool:
         meta['_yoast_wpseo_metadesc'] = metadesc
     # デプロイ確認用: この投稿がどのバージョンのスクリプトで生成されたかを記録する
     meta['_onavi_script_version'] = SCRIPT_VERSION
+
+    # 記事一覧のアイキャッチ画像から直接アフィリエイトリンクへ飛ばせるように、
+    # アフィリエイトURLをカスタムフィールドとしても保存しておく。
+    # ※ WordPress側で '_onavi_affiliate_url' を register_post_meta() 等で
+    #   REST APIに公開しておく必要がある（下記functions.php例を参照）。
+    if article.get('affiliate_url'):
+        meta['_onavi_affiliate_url'] = article['affiliate_url']
+
     if meta:
         payload['meta'] = meta
 
