@@ -92,23 +92,23 @@ jobs:
           MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '5' }}
         run: python wordpress_blog_poster.py
 
-      - name: WordPressへ投稿（同人・date順・重複除外・10件になるまで検索）
-        if: ${{ github.event.inputs.content_type == '' || github.event.inputs.content_type == 'both' || github.event.inputs.content_type == 'doujin' }}
-        env:
-          DMM_API_ID:        ${{ secrets.DMM_API_ID }}
-          DMM_AFFILIATE_ID:  ${{ secrets.DMM_AFFILIATE_ID }}
-          WP_URL:            ${{ secrets.WP_URL }}
-          WP_USERNAME:       ${{ secrets.WP_USERNAME }}
-          WP_APP_PASSWORD:   ${{ secrets.WP_APP_PASSWORD }}
-          WP_POST_STATUS:    ${{ github.event.inputs.wp_post_status || 'publish' }}
-          CONTENT_TYPE:      doujin
-          PRICE_MIN:         ${{ github.event.inputs.price_min || '' }}
-          PRICE_MAX:         ${{ github.event.inputs.price_max || '' }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          # 同人は人気順（rank）・5件をデフォルトとする（スケジュール実行時はこの既定値が使われる）
-          DMM_SORT_MODE:     ${{ github.event.inputs.dmm_sort_mode || 'rank' }}
-          MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '5' }}
-        run: python wordpress_blog_poster.py
+#      - name: WordPressへ投稿（同人・date順・重複除外・10件になるまで検索）
+#        if: ${{ github.event.inputs.content_type == '' || github.event.inputs.content_type == 'both' || github.event.inputs.content_type == 'doujin' }}
+#        env:
+#          DMM_API_ID:        ${{ secrets.DMM_API_ID }}
+#          DMM_AFFILIATE_ID:  ${{ secrets.DMM_AFFILIATE_ID }}
+#          WP_URL:            ${{ secrets.WP_URL }}
+#          WP_USERNAME:       ${{ secrets.WP_USERNAME }}
+#          WP_APP_PASSWORD:   ${{ secrets.WP_APP_PASSWORD }}
+#          WP_POST_STATUS:    ${{ github.event.inputs.wp_post_status || 'publish' }}
+#          CONTENT_TYPE:      doujin
+#          PRICE_MIN:         ${{ github.event.inputs.price_min || '' }}
+#          PRICE_MAX:         ${{ github.event.inputs.price_max || '' }}
+#          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+#          # 同人は人気順（rank）・5件をデフォルトとする（スケジュール実行時はこの既定値が使われる）
+#          DMM_SORT_MODE:     ${{ github.event.inputs.dmm_sort_mode || 'rank' }}
+#          MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '5' }}
+#        run: python wordpress_blog_poster.py
 
       - name: 投稿履歴・除外ログをリポジトリにコミット
         run: |
