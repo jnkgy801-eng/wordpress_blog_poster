@@ -9,7 +9,7 @@ on:
       content_type:
         description: 'コンテンツ種別（手動実行時のみ選択可。定期実行では両方とも投稿します）'
         required: false
-        default: 'both'
+        default: 'av'
         type: choice
         options:
           - both    # AV・同人の両方（定期実行と同じ）
