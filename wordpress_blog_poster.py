@@ -705,7 +705,7 @@ def build_article(product: dict) -> dict:
     if focus_keyphrase and focus_keyphrase not in product['title']:
         excerpt = _make_excerpt(f'{focus_keyphrase}｜{product["title"]}', max_len=55)
     else:
-    excerpt = _base_excerpt
+        excerpt = _base_excerpt
     overview_html = _paragraphs_to_html(body_content['overview'])
     points_html = _points_list_html(body_content['points'])
     genre_badges_html = _genre_badges_html(product.get('genres', []))
