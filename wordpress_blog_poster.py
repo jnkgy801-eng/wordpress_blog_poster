@@ -677,13 +677,17 @@ def _build_focus_keyphrase(product: dict, max_words: int = 2, max_chars: int = 1
 
 def _build_seo_title(product: dict, keyphrase: str = '', max_len: int = 32) -> str:
     """検索結果に表示されるSEOタイトルを生成する。
-    Yoastの「キーフレーズがSEOタイトルの先頭にあること」という推奨に沿うため、
-    先頭にフォーカスキーフレーズを置き、その後に元の作品タイトルを
-    max_lenに収まる範囲で続ける。"""
+    キーフレーズが既にタイトル内に含まれる場合は重複させない。"""
     title = (product.get('title') or '').strip()
     if not keyphrase:
         return title[:max_len]
-    remaining = max_len - len(keyphrase) - 1  # キーフレーズと本タイトルの間の半角スペース分
+
+    # キーフレーズが既にタイトルの先頭付近に含まれていれば、
+    # 単純にタイトルをそのまま使う（重複防止）
+    if keyphrase in title:
+        return title[:max_len]
+
+    remaining = max_len - len(keyphrase) - 1
     if remaining <= 0:
         return keyphrase[:max_len]
     return f'{keyphrase} {title[:remaining].rstrip()}'
