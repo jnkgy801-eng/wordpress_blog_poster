@@ -702,10 +702,10 @@ def build_article(product: dict) -> dict:
     # 文字数は、Yoastが日本語（全角）を長めにカウントする傾向があるため、
     # 「80文字を超えています」という警告が出ないよう余裕を持たせて55文字までに抑える。
     _base_excerpt = _make_excerpt(product['title'], max_len=55)
-    if focus_keyphrase and focus_keyphrase not in _base_excerpt:
+    if focus_keyphrase and focus_keyphrase not in product['title']:
         excerpt = _make_excerpt(f'{focus_keyphrase}｜{product["title"]}', max_len=55)
     else:
-        excerpt = _base_excerpt
+    excerpt = _base_excerpt
     overview_html = _paragraphs_to_html(body_content['overview'])
     points_html = _points_list_html(body_content['points'])
     genre_badges_html = _genre_badges_html(product.get('genres', []))
