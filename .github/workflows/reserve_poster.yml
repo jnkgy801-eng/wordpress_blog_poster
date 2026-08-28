@@ -1,62 +1,75 @@
-name: 予約作品自動投稿
+name: FANZA 予約作品 → WordPress 自動投稿（1日1回・date順）
 
-# 実行タイミング
-#   ・毎日 日本時間 9:00（UTC 0:00）に自動実行
-#   ・「Actions」タブから手動実行（workflow_dispatch）も可能
 on:
   schedule:
+    # 毎日 UTC 0時（日本時間 9時）に実行。1日1回。
     - cron: '0 0 * * *'
   workflow_dispatch:
+    inputs:
+      reserve_window_days:
+        description: '発売日が何日先までの作品を対象にするか（空欄でデフォルト60日）'
+        required: false
+        default: ''
+        type: string
+      max_articles:
+        description: '1回の実行で投稿する記事数の上限（空欄でデフォルト5件）'
+        required: false
+        default: '5'
+        type: string
+      wp_post_status:
+        description: '投稿ステータス（publishは目視確認なしで即公開されるため要注意）'
+        required: false
+        default: 'draft'
+        type: choice
+        options:
+          - draft    # 下書き（デフォルト）
+          - pending  # 承認待ち
+          - publish  # 本公開
+
+concurrency:
+  # 前回の実行が長引いていても、次のcronと重複起動しないようにする
+  group: wordpress-reserve-post
+  cancel-in-progress: false
 
 jobs:
-  post-reserve-articles:
+  post-reserve-drafts:
     runs-on: ubuntu-latest
 
     steps:
       - name: リポジトリをチェックアウト
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
-      - name: Pythonをセットアップ
-        uses: actions/setup-python@v5
+      - name: Pythonのセットアップ
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: '3.10'
 
-      - name: 依存ライブラリをインストール
+      - name: 依存ライブラリのインストール
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then
-            pip install -r requirements.txt
-          else
-            pip install requests
-          fi
+          pip install requests
 
-      - name: 投稿済み履歴ファイル(予約作品用)を復元
-        uses: actions/cache@v4
-        with:
-          path: outputs/posted_history_reserve.json
-          key: posted-history-reserve-${{ github.run_id }}
-          restore-keys: |
-            posted-history-reserve-
-
-      - name: 予約作品を投稿
+      - name: WordPressへ投稿（予約作品・date順・重複除外）
         env:
           DMM_API_ID:          ${{ secrets.DMM_API_ID }}
           DMM_AFFILIATE_ID:    ${{ secrets.DMM_AFFILIATE_ID }}
           WP_URL:              ${{ secrets.WP_URL }}
           WP_USERNAME:         ${{ secrets.WP_USERNAME }}
           WP_APP_PASSWORD:     ${{ secrets.WP_APP_PASSWORD }}
+          ANTHROPIC_API_KEY:   ${{ secrets.ANTHROPIC_API_KEY }}
+          # スケジュール実行（cron）時は github.event.inputs が空になるため、
+          # その場合のデフォルトをここで指定する（現在: draft = 下書き）。
+          WP_POST_STATUS:      ${{ github.event.inputs.wp_post_status || 'draft' }}
           CONTENT_TYPE:        av
-          WP_POST_STATUS:      draft
-          RESERVE_WINDOW_DAYS: '60'
-          MAX_ARTICLES:        '5'
-          FETCH_COUNT:         '100'
-          RANK_FETCH_LIMIT:    '500'
-          EXCLUDE_VR:          'true'
+          DMM_SORT_MODE:       date
+          RESERVE_WINDOW_DAYS: ${{ github.event.inputs.reserve_window_days || '60' }}
+          MAX_ARTICLES:        ${{ github.event.inputs.max_articles || '5' }}
         run: python wordpress_reserve_poster.py
 
-      - name: 投稿済み履歴ファイル(予約作品用)を保存
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: outputs/posted_history_reserve.json
-          key: posted-history-reserve-${{ github.run_id }}
+      - name: 投稿履歴・除外ログをリポジトリにコミット
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          mkdir -p outputs
+          git add -A outputs/
+          git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 予約作品自動投稿 履歴更新 ($(date +'%Y-%m-%d %H:%M:%S'))" && git push)
