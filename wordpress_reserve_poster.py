@@ -97,6 +97,8 @@ print(f'📌 コンテンツ種別: {CONTENT_LABEL}（service={SERVICE}, floor={
 
 RANK_FETCH_LIMIT = int(os.environ.get('RANK_FETCH_LIMIT', '500'))
 DATE_WINDOW_DAYS = int(os.environ.get('DATE_WINDOW_DAYS', '14'))
+# 予約作品として対象にする「発売日までの日数」の上限（デフォルト60日先まで）
+RESERVE_WINDOW_DAYS = int(os.environ.get('RESERVE_WINDOW_DAYS', '60'))
 
 # DMM APIへ渡すsortパラメータ。rank（人気順）/ date（新着順）から選択。
 DMM_SORT_MODE = os.environ.get('DMM_SORT_MODE', 'date').strip().lower()
@@ -106,7 +108,7 @@ if DMM_SORT_MODE not in ('rank', 'date'):
 _SORT_LABEL = {'rank': '人気順', 'date': '新着順'}[DMM_SORT_MODE]
 
 print(f'📌 {_SORT_LABEL}（sort={DMM_SORT_MODE}）で上位{RANK_FETCH_LIMIT}件を取得し、'
-      f'発売日/配信日が実行日時より過去（今日から過去{DATE_WINDOW_DAYS}日以内）の作品のみ投稿対象にします。')
+      f'発売日/配信日が実行日時より未来（今日から未来{RESERVE_WINDOW_DAYS}日以内）の予約作品のみ投稿対象にします。')
 
 # 価格フィルタ（円）。未設定なら制限なし。price_numが取得できない商品は対象外にはしない。
 def _parse_price_env(name: str):
@@ -145,9 +147,6 @@ MAX_ARTICLES = int(os.environ.get('MAX_ARTICLES', '5'))  # 1回の実行で投�
 
 # 投稿済み作品の重複防止用履歴ファイル（予約作品専用。発売作品用スクリプトとは別ファイル）
 POSTED_HISTORY_FILE = Path(os.environ.get('POSTED_HISTORY_FILE', 'outputs/posted_history_reserve.json'))
-
-# 予約作品として対象にする「発売日までの日数」の上限（デフォルト60日先まで）
-RESERVE_WINDOW_DAYS = int(os.environ.get('RESERVE_WINDOW_DAYS', '60'))
 
 # ================================================================
 # 🗂️ 投稿履歴管理（重複投稿防止）
