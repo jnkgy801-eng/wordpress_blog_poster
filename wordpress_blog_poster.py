@@ -45,7 +45,8 @@ WP_APP_PASSWORD  = os.environ.get('WP_APP_PASSWORD', '')         # アプリケ�
 # 記事内容・画像・年齢確認フィルターの精度に十分自信がある場合のみ使用してください。
 WP_POST_STATUS   = os.environ.get('WP_POST_STATUS', 'draft').lower()
 
-ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
+GEMINI_MODEL   = os.environ.get('GEMINI_MODEL', 'gemini-3.5-flash')
 
 if not DMM_API_ID or not DMM_AFFILIATE_ID:
     print('❌ 環境変数 DMM_API_ID / DMM_AFFILIATE_ID が設定されていません。')
@@ -293,9 +294,25 @@ def parse_product(item):
                 price_num = int(digits)
                 price_str = f'¥{price_num:,}'
 
-    genres = [g.get('name', '') for g in (item.get('iteminfo', {}).get('genre') or [])]
-    maker  = ((item.get('iteminfo', {}).get('maker') or [{}])[0]).get('name', '')
-    actors = [a.get('name', '') for a in (item.get('iteminfo', {}).get('actress') or []) if a.get('name')][:3]
+    iteminfo = item.get('iteminfo', {}) or {}
+    # ジャンルは[:5]で切り捨てず全件保持する（プロンプト側で作品の差別化に使うため）
+    genres   = [g.get('name', '') for g in (iteminfo.get('genre') or [])]
+    maker    = ((iteminfo.get('maker') or [{}])[0]).get('name', '')
+    actors   = [a.get('name', '') for a in (iteminfo.get('actress') or []) if a.get('name')][:3]
+
+    # 作品固有の差別化情報（シリーズ・レーベル・監督）。
+    # 存在しない作品も多いため、無ければ空文字にフォールバックする。
+    series   = ((iteminfo.get('series') or [{}])[0]).get('name', '')
+    label    = ((iteminfo.get('label') or [{}])[0]).get('name', '')
+    director = ((iteminfo.get('director') or [{}])[0]).get('name', '')
+
+    # サンプル動画URL（記事に埋め込み用）。取得できるサイズを優先度順に探す。
+    sample_movie_url = ''
+    movie_block = item.get('sampleMovieURL', {}) or {}
+    for key in ('size_720_480', 'size_644_414', 'size_560_360', 'size_476_306'):
+        if movie_block.get(key):
+            sample_movie_url = movie_block[key]
+            break
 
     review_info = item.get('review', {}) or {}
     try:
@@ -333,6 +350,10 @@ def parse_product(item):
         'review_count':  review_count,
         'package_image': package_image,
         'sample_images': sample_images,
+        'sample_movie_url': sample_movie_url,
+        'series':        series,
+        'label':         label,
+        'director':      director,
         'date':          item.get('date', ''),
     }
 
@@ -342,99 +363,105 @@ def parse_product(item):
 # ================================================================
 
 def get_article_body_ai(product: dict, focus_keyphrase: str = '') -> dict:
-    if ANTHROPIC_API_KEY:
+    if GEMINI_API_KEY:
         try:
             return _get_article_body_from_api(product, focus_keyphrase)
         except Exception as e:
             print(f'    ⚠️ AI記事生成エラー（テンプレート使用）: {e}')
+    else:
+        # GEMINI_API_KEY未設定に気づかないままテンプレート運用が続く事故を防ぐため、
+        # 実行のたびに明示的に警告を出す。
+        print('    ⚠️ GEMINI_API_KEY未設定のため、テンプレート文章を使用します。')
     return _get_article_body_template(product, focus_keyphrase)
 
 
 def _get_article_body_from_api(product: dict, focus_keyphrase: str = '') -> dict:
-    genre_str = '・'.join(product['genres'][:5]) if product['genres'] else '不明'
+    # ジャンルは全件使う（切り捨てない）。作品ごとの差別化に使う情報のため。
+    genre_str = '・'.join(product['genres']) if product['genres'] else '不明'
     review_str = (
         f"平均{product['review_avg']}点（{product['review_count']}件のレビュー）"
         if product.get('review_avg') and product.get('review_count')
         else '不明'
     )
+
+    # 作品固有の差別化情報（シリーズ・レーベル・監督）。無ければその旨を明記し、
+    # AIが実在しない情報を捏造しないようにする。
+    unique_info_lines = []
+    if product.get('series'):
+        unique_info_lines.append(f"シリーズ: {product['series']}")
+    if product.get('label'):
+        unique_info_lines.append(f"レーベル: {product['label']}")
+    if product.get('director'):
+        unique_info_lines.append(f"監督: {product['director']}")
+    unique_info_str = '\n'.join(unique_info_lines) if unique_info_lines else '（シリーズ・レーベル情報なし）'
+
     keyphrase_instruction = ''
     if focus_keyphrase:
         keyphrase_instruction = (
             f"- 「{focus_keyphrase}」というキーフレーズを、OVERVIEWの最初の一文に必ず含め、\n"
             "  かつ本文（OVERVIEW+POINTS）全体でもう1回以上、自然な形で登場させる\n"
         )
+
     prompt = (
-        f"あなたは{CONTENT_LABEL}（成人向け）ジャンルを専門とする、成約率の高いプロの\n"
-        "アフィリエイターです。以下の作品の紹介記事の本文材料を作成してください。\n"
-        "ゴールは『読ませること』ではなく『購入ボタンを押させること』です。\n"
-        "読み手がクスッと笑いながら読み進めつつ、読み終える頃には具体的な使用シーンが\n"
-        "頭に浮かび、『これは買うしかない』と自然に思ってしまうような、購買行動に\n"
-        "直結する文章にしてください。\n\n"
+        f"あなたは{CONTENT_LABEL}（成人向け）ジャンルを専門とする、読者の意思決定を助ける\n"
+        "レビューライターです。以下の作品について、読者が『自分に合う作品かどうか』を\n"
+        "具体的に判断できるような紹介記事の本文材料を作成してください。\n"
+        "ゴールは読者を煽って購入させることではなく、正直で具体的な情報を提供し、\n"
+        "結果として『自分に合っている』と納得した読者が自然に購入を検討できる状態を\n"
+        "作ることです。\n\n"
         f"作品名: {product['title']}\n"
         f"ジャンル: {genre_str}\n"
         f"{'サークル' if CONTENT_TYPE == 'doujin' else 'メーカー/レーベル'}: {product.get('maker') or '不明'}\n"
+        f"{unique_info_str}\n"
         f"価格: {product.get('price') or '不明'}\n"
         f"レビュー: {review_str}\n\n"
-        "セールスライティングの構成（PASONAの流れを意識する。ラベルは書かず、\n"
-        "自然な文章として溶け込ませること）:\n"
-        "1. Problem/Affinity: 読者が『わかる…』と共感してしまう欲求・シチュエーションを\n"
-        "   ジャンルから想像して切り出す（例: こういう相手にこうされたい、この設定に弱い、等）\n"
-        "2. Solution: この作品ならその欲求がどう満たされるかを、具体的な情景が目に浮かぶ\n"
-        "   レベルで描写する（誰が・どんな関係性で・どういうシーンか）\n"
-        "3. Offer: 価格に対して『このボリューム・満足度なら安い』と感じさせる一言を\n"
-        "   さりげなく入れる（具体的な割引率や『業界最安』等の数値断定は禁止。\n"
-        "   価格情報は既に別欄で表示されるため、円額そのものはOVERVIEW本文では言及しない）\n"
-        "4. Narrowing down/背中押し: 『こんな人には特に刺さる』を1文で提示し、最後に\n"
-        "   『買わない理由が見当たらない』『気づいたらカートに入れている』\n"
-        "   『開いたが最後、最後まで見てしまう』のような、行動を促す一言で締める\n\n"
+        "本文の書き方:\n"
+        "1. この作品ならではの特徴（シリーズものならその中での位置づけ・過去作との違い、\n"
+        "   レーベル/監督が分かる場合はその作風の傾向）を、憶測ではなく分かる範囲で明記する。\n"
+        "   情報がない場合は無理に触れなくてよい（存在しない情報を作らない）\n"
+        "2. ジャンルの組み合わせから、どんな状況・関係性を描いた作品かを具体的に描写する\n"
+        "3. 『こんな人には特に向いている』『逆にこういう好みの人には物足りないかもしれない』\n"
+        "   という判断材料を両方入れる（誇大な断定は避ける）\n"
+        "4. 価格情報の円額そのものはOVERVIEW本文では言及しない（別欄表示のため）\n\n"
         "条件:\n"
         f"{keyphrase_instruction}"
-        "- 文体はユーモラスで軽快に。読者にニヤッとしてもらえるような比喩・ツッコミ・\n"
-        "  軽い自虐やボケを交えてよい（下品・侮辱的にはしない）\n"
-        "- 抽象的な誉め言葉（『魅力的』『必見』『必見の一作』等）だけで終わらせず、\n"
-        "  読者の五感・感情・具体的な妄想を刺激する描写を必ず入れる\n"
-        "- 文章の読みやすさのため、「さらに」「また」「そのため」「つまり」「一方で」\n"
-        "  「ちなみに」「実際」「なぜなら」「ただし」などの転換語（接続表現）を、\n"
-        "  文全体の3〜4割程度の文の先頭に必ず使う（Yoast SEOの可読性チェックで\n"
-        "  『転換語が含まれる文の割合が30%未満』という警告が出ないよう、少なくとも\n"
-        "  3割は超えるようにする）\n"
-        "- ただし『業界No.1』『絶対』『必ず満足』『今だけ』『期間限定』など、検証不可能な\n"
+        "- 文体は親しみやすく具体的に。読者の判断を助けることを最優先する\n"
+        "- 抽象的な誉め言葉（『魅力的』『必見』等）だけで終わらせず、具体的な描写を入れる\n"
+        "- 『業界No.1』『絶対』『必ず満足』『今だけ』『期間限定』など、検証不可能な\n"
         "  断定・優良誤認・実際にはない限定性を匂わせる表現（景品表示法に抵触しうる\n"
         "  表現）は使わない\n"
         "- 未成年を想起させる表現は一切使わない（成人向け作品であることを前提にする）\n"
-        "- OVERVIEWは作品タイトルを本文中で繰り返さない（タイトルは見出しに既に表示されている）。\n"
-        "  代わりに、ジャンルから読み取れる『どんな魅力があるか』『どういうシチュエーション・\n"
-        "  関係性の話か』を、ユーモアと具体的な情景描写を交えつつ自然な文章として書く\n"
+        "- OVERVIEWは作品タイトルを本文中で繰り返さない（タイトルは見出しに既に表示されている）\n"
         "- POINTSに価格やレビュー点数など数値情報は含めない（別欄に表示済みのため）\n"
-        "- POINTSは『○○要素が中心のストーリー』のような機械的な言い回しを使わない。\n"
-        "  各項目は『その特徴があることで読者にどんな満足・興奮・楽しみが得られるか』を\n"
-        "  ベネフィット視点で描写し、ユーモアを効かせつつ項目ごとに違う言い回しで、\n"
-        "  思わず読みたくなる一文にする\n"
-        "- POINTSのうち少なくとも1項目は、サンプル画像や試し読みを見に行きたくなる\n"
-        "  ような『続きが気になる』フックにする\n"
+        "- POINTSは『○○要素が中心のストーリー』のような機械的な言い回しを避け、\n"
+        "  各項目で違う切り口・違う言い回しにする\n"
         "- 出力は必ず次のプレーンテキスト形式のみ。前置きや説明・Markdown記法は禁止。\n\n"
         "===OVERVIEW===\n"
-        "(280〜380文字程度で、上記PASONAの流れに沿って2〜3段落、ユーモアを交えて。\n"
-        "段落間は空行で区切る)\n"
+        "(800〜1200文字程度で、上記の書き方に沿って3〜5段落。段落間は空行で区切る)\n"
         "===POINTS===\n"
-        "(「ここがポイント」として4〜5個、1行1項目、先頭に「- 」を付ける。各項目は40〜60文字程度で)\n"
+        "(「ここがポイント」として4〜5個、1行1項目、先頭に「- 」を付ける。各項目は60〜100文字程度で)\n"
     )
+
+    # Gemini API呼び出し（課金設定をしない限り無料枠で利用可能）
     resp = requests.post(
-        'https://api.anthropic.com/v1/messages',
-        headers={
-            'x-api-key': ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01',
-            'content-type': 'application/json',
-        },
+        f'https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent',
+        params={'key': GEMINI_API_KEY},
+        headers={'content-type': 'application/json'},
         json={
-            'model': 'claude-haiku-4-5-20251001',
-            'max_tokens': 600,
-            'messages': [{'role': 'user', 'content': prompt}],
+            'contents': [{'parts': [{'text': prompt}]}],
+            'generationConfig': {
+                'maxOutputTokens': 1600,
+                'temperature': 0.9,
+            },
         },
-        timeout=15,
+        timeout=20,
     )
     data = resp.json()
-    text = data.get('content', [{}])[0].get('text', '').strip()
+    try:
+        text = data['candidates'][0]['content']['parts'][0]['text'].strip()
+    except (KeyError, IndexError, TypeError):
+        raise ValueError(f'unexpected Gemini API response: {data}')
+
     if not text or '===OVERVIEW===' not in text or '===POINTS===' not in text:
         raise ValueError('unexpected AI response format')
 
@@ -609,6 +636,20 @@ def _sample_gallery_html(affiliate_url: str, sample_images: list, title: str, fo
     )
 
 
+def _sample_video_html(sample_movie_url: str) -> str:
+    """サンプル動画の埋め込み。DMM APIからサンプル動画URLが取得できた作品のみ表示される。
+    静止画ギャラリーだけのページより滞在時間が伸びやすく、ページの情報価値も上がる。"""
+    if not sample_movie_url:
+        return ''
+    return (
+        '<div class="ona-sample-video" style="margin:14px 0;">'
+        '<h3 style="margin:0 0 8px;font-size:15px;">サンプル動画</h3>'
+        f'<video controls preload="none" style="width:100%;max-width:560px;border-radius:8px;" '
+        f'src="{escape(sample_movie_url)}"></video>'
+        '</div>'
+    )
+
+
 def _make_slug(content_id: str, title: str) -> str:
     """パーマリンクを英数字のみの短いスラッグにする。
     日本語タイトルがそのままURLエンコードされて長く読みにくくなるのを防ぐため、
@@ -714,6 +755,7 @@ def build_article(product: dict) -> dict:
         product.get('affiliate_url', ''), product.get('sample_images', []), product.get('title', ''),
         focus_keyphrase
     )
+    video_html = _sample_video_html(product.get('sample_movie_url', ''))
 
     meta_line_parts = []
     if product.get('maker'):
@@ -771,6 +813,7 @@ def build_article(product: dict) -> dict:
             price_badge_html,
             points_html,
             gallery_html,
+            video_html,
             cta_html,
             internal_link_html,
             disclaimer_html,
