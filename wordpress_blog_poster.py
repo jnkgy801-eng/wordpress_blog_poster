@@ -453,8 +453,12 @@ def _get_article_body_from_api(product: dict, focus_keyphrase: str = '') -> dict
         json={
             'contents': [{'parts': [{'text': prompt}]}],
             'generationConfig': {
-                'maxOutputTokens': 1600,
+                # 800〜1200字の本文＋POINTSを日本語で出力するには1600では不足しがちなため増量。
+                'maxOutputTokens': 4096,
                 'temperature': 0.9,
+                # 内部思考（thinking）にトークンを消費させず、全予算を実際の出力に充てる。
+                # thinkingBudget未対応のモデルの場合はこのフィールドは無視される想定。
+                'thinkingConfig': {'thinkingBudget': 0},
             },
             'safetySettings': [
                 {'category': 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'threshold': 'BLOCK_NONE'},
@@ -467,7 +471,12 @@ def _get_article_body_from_api(product: dict, focus_keyphrase: str = '') -> dict
     )
     data = resp.json()
     try:
-        text = data['candidates'][0]['content']['parts'][0]['text'].strip()
+        parts = data['candidates'][0]['content']['parts']
+        # 応答が複数partsに分かれるケースに備え、全partsのtextを連結する
+        # （parts[0]だけを見ると、モデルによっては本文の一部しか拾えないことがある）。
+        text = ''.join(p.get('text', '') for p in parts).strip()
+        if not text:
+            raise KeyError('no text in parts')
     except (KeyError, IndexError, TypeError):
         # candidatesが無い/空の場合、多くは安全フィルタによるブロックが原因。
         # promptFeedback（ブロック理由）を含めてログに出し、原因を特定しやすくする。
