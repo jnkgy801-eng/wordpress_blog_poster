@@ -3,7 +3,7 @@ name: FANZA 同人/動画 → WordPress 自動投稿（3時間おき・AV/同人
 on:
   schedule:
     # 3時間おき（UTC 0,3,6,9,12,15,18,21時 = 日本時間 9,12,15,18,21,0,3,6時）に実行。1日8回。
-    - cron: '0 */3 * * *'
+    - cron: '0 */6 * * *'
   workflow_dispatch:
     inputs:
       content_type:
@@ -89,7 +89,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # AV（動画）は新着順（date）・5件をデフォルトとする（スケジュール実行時はこの既定値が使われる）
           DMM_SORT_MODE:     ${{ github.event.inputs.dmm_sort_mode || 'rank' }}
-          MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '5' }}
+          MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '2' }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python wordpress_blog_poster.py
 
