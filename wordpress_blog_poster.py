@@ -443,6 +443,9 @@ def _get_article_body_from_api(product: dict, focus_keyphrase: str = '') -> dict
     )
 
     # Gemini API呼び出し（課金設定をしない限り無料枠で利用可能）
+    # 成人向け作品の紹介文であるため、性的表現に関する安全フィルタの閾値を
+    # 緩めておく（デフォルトのままだと、正当な業務利用でも出力がブロックされ
+    # 空文字やフォーマット崩れの応答になりやすい）。
     resp = requests.post(
         f'https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent',
         params={'key': GEMINI_API_KEY},
@@ -453,6 +456,12 @@ def _get_article_body_from_api(product: dict, focus_keyphrase: str = '') -> dict
                 'maxOutputTokens': 1600,
                 'temperature': 0.9,
             },
+            'safetySettings': [
+                {'category': 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'threshold': 'BLOCK_NONE'},
+                {'category': 'HARM_CATEGORY_HARASSMENT',        'threshold': 'BLOCK_ONLY_HIGH'},
+                {'category': 'HARM_CATEGORY_HATE_SPEECH',       'threshold': 'BLOCK_ONLY_HIGH'},
+                {'category': 'HARM_CATEGORY_DANGEROUS_CONTENT', 'threshold': 'BLOCK_ONLY_HIGH'},
+            ],
         },
         timeout=20,
     )
@@ -460,10 +469,23 @@ def _get_article_body_from_api(product: dict, focus_keyphrase: str = '') -> dict
     try:
         text = data['candidates'][0]['content']['parts'][0]['text'].strip()
     except (KeyError, IndexError, TypeError):
-        raise ValueError(f'unexpected Gemini API response: {data}')
+        # candidatesが無い/空の場合、多くは安全フィルタによるブロックが原因。
+        # promptFeedback（ブロック理由）を含めてログに出し、原因を特定しやすくする。
+        prompt_feedback = data.get('promptFeedback', {})
+        raise ValueError(f'unexpected Gemini API response: promptFeedback={prompt_feedback} / raw={data}')
 
     if not text or '===OVERVIEW===' not in text or '===POINTS===' not in text:
-        raise ValueError('unexpected AI response format')
+        # フォーマット崩れの原因調査用に、実際に返ってきたテキストの先頭部分と
+        # finishReason（MAX_TOKENS/SAFETY等）をログに出す。
+        finish_reason = ''
+        try:
+            finish_reason = data['candidates'][0].get('finishReason', '')
+        except (KeyError, IndexError, TypeError):
+            pass
+        preview = text[:300] if text else '(空文字)'
+        raise ValueError(
+            f'unexpected AI response format / finishReason={finish_reason} / text_preview={preview!r}'
+        )
 
     overview_part = text.split('===OVERVIEW===', 1)[1].split('===POINTS===', 1)[0].strip()
     points_part = text.split('===POINTS===', 1)[1].strip()
