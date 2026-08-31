@@ -90,6 +90,7 @@ jobs:
           # AV（動画）は新着順（date）・5件をデフォルトとする（スケジュール実行時はこの既定値が使われる）
           DMM_SORT_MODE:     ${{ github.event.inputs.dmm_sort_mode || 'rank' }}
           MAX_ARTICLES:      ${{ github.event.inputs.max_articles || '5' }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python wordpress_blog_poster.py
 
 #      - name: WordPressへ投稿（同人・date順・重複除外・10件になるまで検索）
