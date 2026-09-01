@@ -738,14 +738,21 @@ def _sample_gallery_html(affiliate_url: str, sample_images: list, title: str, fo
 
 def _sample_video_html(sample_movie_url: str) -> str:
     """サンプル動画の埋め込み。DMM APIからサンプル動画URLが取得できた作品のみ表示される。
-    静止画ギャラリーだけのページより滞在時間が伸びやすく、ページの情報価値も上がる。"""
+    静止画ギャラリーだけのページより滞在時間が伸びやすく、ページの情報価値も上がる。
+
+    DMM APIの sampleMovieURL は多くの場合、直接再生できる動画ファイル（.mp4等）ではなく、
+    litevideo等のプレイヤーページ（HTML）のURLを返す仕様のため、<video src="..."> ではなく
+    <iframe> で埋め込む（<video>のままだと再生されない/真っ黒になることがある）。"""
     if not sample_movie_url:
         return ''
     return (
         '<div class="ona-sample-video" style="margin:14px 0;">'
         '<h3 style="margin:0 0 8px;font-size:15px;">サンプル動画</h3>'
-        f'<video controls preload="none" style="width:100%;max-width:560px;border-radius:8px;" '
-        f'src="{escape(sample_movie_url)}"></video>'
+        '<div style="position:relative;width:100%;max-width:560px;aspect-ratio:560/360;">'
+        f'<iframe src="{escape(sample_movie_url)}" '
+        'style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;border-radius:8px;" '
+        'allow="autoplay; fullscreen" allowfullscreen loading="lazy"></iframe>'
+        '</div>'
         '</div>'
     )
 
