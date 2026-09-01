@@ -142,29 +142,57 @@ POSTED_HISTORY_FILE = Path(os.environ.get('POSTED_HISTORY_FILE', 'outputs/posted
 # 🗂️ 投稿履歴管理（重複投稿防止）
 # ================================================================
 
-def load_posted_history() -> set:
+def load_posted_history() -> dict:
+    """投稿済みID集合（'posted'）に加えて、直近記事の書き出し冒頭リスト
+    （'recent_openings'）も一緒に読み込む。後者はAIへの自己模倣防止プロンプトに使う。"""
     if not POSTED_HISTORY_FILE.exists():
-        return set()
+        return {'posted': set(), 'recent_openings': []}
     try:
         with open(POSTED_HISTORY_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
-        return set(data.get('posted', []))
+        return {
+            'posted': set(data.get('posted', [])),
+            'recent_openings': list(data.get('recent_openings', [])),
+        }
     except Exception as e:
         print(f'⚠️ 投稿履歴の読み込みに失敗しました（新規履歴として扱います）: {e}')
-        return set()
+        return {'posted': set(), 'recent_openings': []}
 
 
-def save_posted_history(history: set) -> None:
+def save_posted_history(posted: set, recent_openings: list = None) -> None:
     POSTED_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     try:
         with open(POSTED_HISTORY_FILE, 'w', encoding='utf-8') as f:
-            json.dump({'posted': sorted(history)}, f, ensure_ascii=False, indent=2)
+            json.dump(
+                {
+                    'posted': sorted(posted),
+                    'recent_openings': (recent_openings or [])[-_RECENT_OPENINGS_KEEP:],
+                },
+                f, ensure_ascii=False, indent=2,
+            )
     except Exception as e:
         print(f'⚠️ 投稿履歴の保存に失敗しました: {e}')
 
 
 def product_history_key(product: dict) -> str:
     return product.get('content_id') or f"title:{product.get('title', '')}"
+
+
+# 直近何件分の「書き出し冒頭」を履歴として保持し、AIへの
+# 自己模倣防止プロンプトに使うか。多すぎるとプロンプトが長くなるため8件程度に留める。
+_RECENT_OPENINGS_KEEP = 8
+
+
+def _stable_variant_index(key: str, salt: str, mod: int) -> int:
+    """content_id等のキーと軸ごとのsaltから、実行のたびに変わらない安定した
+    バリエーション番号（0〜mod-1）を算出する。
+    同じ作品は常に同じ番号になるが、salt（'structure'/'heading'/'appeal'等）を
+    変えることで、構成順・見出し・訴求パターンといった各軸を互いに独立して
+    ばらつかせることができる（全軸が常に同じ組み合わせになるのを防ぐ）。"""
+    if not key or mod <= 1:
+        return 0
+    combined = f'{key}::{salt}'
+    return sum(ord(c) for c in combined) % mod
 
 
 # ================================================================
@@ -362,20 +390,28 @@ def parse_product(item):
 # 📝 記事本文生成（元スクリプトと同じロジック）
 # ================================================================
 
-def get_article_body_ai(product: dict, focus_keyphrase: str = '') -> dict:
+def get_article_body_ai(product: dict, focus_keyphrase: str = '', appeal_pattern: dict = None,
+                         length_variant: dict = None, recent_openings: list = None) -> dict:
     if GEMINI_API_KEY:
         try:
-            return _get_article_body_from_api(product, focus_keyphrase)
+            return _get_article_body_from_api(
+                product, focus_keyphrase,
+                appeal_pattern=appeal_pattern, length_variant=length_variant,
+                recent_openings=recent_openings,
+            )
         except Exception as e:
             print(f'    ⚠️ AI記事生成エラー（テンプレート使用）: {e}')
     else:
         # GEMINI_API_KEY未設定に気づかないままテンプレート運用が続く事故を防ぐため、
         # 実行のたびに明示的に警告を出す。
         print('    ⚠️ GEMINI_API_KEY未設定のため、テンプレート文章を使用します。')
-    return _get_article_body_template(product, focus_keyphrase)
+    return _get_article_body_template(product, focus_keyphrase, appeal_pattern=appeal_pattern)
 
 
-def _get_article_body_from_api(product: dict, focus_keyphrase: str = '') -> dict:
+def _get_article_body_from_api(product: dict, focus_keyphrase: str = '', appeal_pattern: dict = None,
+                                length_variant: dict = None, recent_openings: list = None) -> dict:
+    appeal_pattern = appeal_pattern or _APPEAL_PATTERNS[0]
+    length_variant = length_variant or _LENGTH_VARIANTS[1]
     # ジャンルは全件使う（切り捨てない）。作品ごとの差別化に使う情報のため。
     genre_str = '・'.join(product['genres']) if product['genres'] else '不明'
     review_str = (
@@ -402,6 +438,23 @@ def _get_article_body_from_api(product: dict, focus_keyphrase: str = '') -> dict
             "  かつ本文（OVERVIEW+POINTS）全体でもう1回以上、自然な形で登場させる\n"
         )
 
+    # 訴求パターン（利用シーン/ジャンル比較/作者・レーベル/読者タイプ）を作品ごとに
+    # 固定でローテーションさせ、記事間で切り口が単調に揃わないようにする。
+    appeal_instruction = appeal_pattern['instruction']
+
+    # 直近の記事の書き出しパターンをAIに伝え、同じ言い回し・構文の繰り返しを避けさせる
+    # （内容の使い回し防止ではなく、あくまで「書き出しの型」の重複防止が目的）。
+    avoid_repetition_instruction = ''
+    if recent_openings:
+        sample = recent_openings[-5:]
+        bullet_lines = '\n'.join(f'  - 「{op}…」' for op in sample)
+        avoid_repetition_instruction = (
+            "- 直近の記事は次のような書き出しで始まっています。同じ言い回し・"
+            "同じ文構造の書き出しは避けてください（内容自体の使い回し防止ではなく、"
+            "書き出しパターンの単調な重複を避ける目的です）:\n"
+            f"{bullet_lines}\n"
+        )
+
     prompt = (
         f"あなたは{CONTENT_LABEL}（成人向け）ジャンルを専門とする、読者の意思決定を助ける\n"
         "レビューライターです。以下の作品について、読者が『自分に合う作品かどうか』を\n"
@@ -425,6 +478,8 @@ def _get_article_body_from_api(product: dict, focus_keyphrase: str = '') -> dict
         "4. 価格情報の円額そのものはOVERVIEW本文では言及しない（別欄表示のため）\n\n"
         "条件:\n"
         f"{keyphrase_instruction}"
+        f"{appeal_instruction}"
+        f"{avoid_repetition_instruction}"
         "- 文体は親しみやすく具体的に。読者の判断を助けることを最優先する\n"
         "- 抽象的な誉め言葉（『魅力的』『必見』等）だけで終わらせず、具体的な描写を入れる\n"
         "- 『業界No.1』『絶対』『必ず満足』『今だけ』『期間限定』など、検証不可能な\n"
@@ -437,9 +492,9 @@ def _get_article_body_from_api(product: dict, focus_keyphrase: str = '') -> dict
         "  各項目で違う切り口・違う言い回しにする\n"
         "- 出力は必ず次のプレーンテキスト形式のみ。前置きや説明・Markdown記法は禁止。\n\n"
         "===OVERVIEW===\n"
-        "(800〜1200文字程度で、上記の書き方に沿って3〜5段落。段落間は空行で区切る)\n"
+        f"({length_variant['paragraphs']}で、上記の書き方に沿って段落間は空行で区切る)\n"
         "===POINTS===\n"
-        "(「ここがポイント」として4〜5個、1行1項目、先頭に「- 」を付ける。各項目は60〜100文字程度で)\n"
+        f"(「ここがポイント」として{length_variant['points_count']}、1行1項目、先頭に「- 」を付ける。各項目は60〜100文字程度で)\n"
     )
 
     # Gemini API呼び出し（課金設定をしない限り無料枠で利用可能）
@@ -505,7 +560,7 @@ def _get_article_body_from_api(product: dict, focus_keyphrase: str = '') -> dict
     ]
     if not overview_part or not points:
         raise ValueError('empty overview or points')
-    return {'overview': overview_part, 'points': points[:4]}
+    return {'overview': overview_part, 'points': points[:length_variant['points_max']]}
 
 
 _GENRE_POINT_TEMPLATES = [
@@ -522,7 +577,11 @@ _OVERVIEW_CLOSERS = [
 ]
 
 
-def _get_article_body_template(product: dict, focus_keyphrase: str = '') -> dict:
+def _get_article_body_template(product: dict, focus_keyphrase: str = '', appeal_pattern: dict = None) -> dict:
+    # AI生成失敗時のフォールバックだが、テンプレート運用が続いた場合でも
+    # 「作者・レーベル訴求」など訴求パターンに応じて一言添える文を変え、
+    # 完全に同一の文面が量産されるのを多少なりとも軽減する。
+    appeal_name = (appeal_pattern or {}).get('name', '')
     genre_str = '、'.join(product['genres'][:5]) if product['genres'] else '不明'
     work_kind = '同人作品' if CONTENT_TYPE == 'doujin' else 'AV作品'
 
@@ -536,7 +595,10 @@ def _get_article_body_template(product: dict, focus_keyphrase: str = '') -> dict
         actor_str = '、'.join(product['actors'])
         overview += f" 出演しているのは{actor_str}。この時点でもう見る理由は十分揃っています。"
     if product.get('maker'):
-        overview += f" ちなみに、手がけるのは{product['maker']}。"
+        if appeal_name == '作者・レーベル訴求':
+            overview += f" 手がけているのは{product['maker']}で、作風の傾向を知っている方なら安心して選べる一本です。"
+        else:
+            overview += f" ちなみに、手がけるのは{product['maker']}。"
     if product.get('price'):
         overview += f" さらに価格は{product['price']}なので、この内容ならコスパも十分満足できるはずです。"
     if product.get('genres'):
@@ -628,7 +690,7 @@ def _star_rating_html(avg, count) -> str:
     )
 
 
-def _points_list_html(points: list) -> str:
+def _points_list_html(points: list, heading: str = '✓ ここがポイント') -> str:
     if not points:
         return ''
     items = ''.join(
@@ -637,13 +699,14 @@ def _points_list_html(points: list) -> str:
     )
     return (
         '<div class="ona-points-box">'
-        '<h2 class="ona-points-title" style="margin:0 0 8px;font-size:16px;">✓ ここがポイント</h2>'
+        f'<h2 class="ona-points-title" style="margin:0 0 8px;font-size:16px;">{escape(heading)}</h2>'
         f'<ul style="margin:0;padding-left:20px;">{items}</ul>'
         '</div>'
     )
 
 
-def _sample_gallery_html(affiliate_url: str, sample_images: list, title: str, focus_keyphrase: str = '') -> str:
+def _sample_gallery_html(affiliate_url: str, sample_images: list, title: str, focus_keyphrase: str = '',
+                          heading: str = '作品サンプル') -> str:
     imgs = [u for u in (sample_images or []) if u][:8]
     if not imgs:
         return ''
@@ -661,7 +724,7 @@ def _sample_gallery_html(affiliate_url: str, sample_images: list, title: str, fo
         )
     return (
         '<div class="ona-sample-gallery">'
-        '<h3 class="ona-sample-gallery-title" style="margin:0 0 8px;font-size:15px;">作品サンプル</h3>'
+        f'<h3 class="ona-sample-gallery-title" style="margin:0 0 8px;font-size:15px;">{escape(heading)}</h3>'
         '<div class="ona-sample-grid">' + ''.join(cells) + '</div>'
         '</div>'
     )
@@ -679,6 +742,77 @@ def _sample_video_html(sample_movie_url: str) -> str:
         f'src="{escape(sample_movie_url)}"></video>'
         '</div>'
     )
+
+
+# ================================================================
+# 🎛️ 記事バリエーション設定（同一テンプレート感の軽減用）
+# ================================================================
+# 全記事が「同じ見出し・同じセクション順」になると、文章表現を変えても
+# サイト全体としては機械生成のパターンとして見えやすい。
+# content_idベースで安定的に（＝再実行しても同じ作品は同じ結果になるように）
+# 構成順・見出し文言・AIへの訴求指示をばらけさせる。
+
+# セクション構成順のバリエーション（デフォルトのハッシュ選択用）。
+# 各要素名はbuild_article内のsections辞書のキーと対応する。
+_SECTION_ORDER_VARIANTS = [
+    ['overview', 'meta', 'badges', 'star', 'price', 'points', 'gallery', 'video', 'cta', 'internal_link', 'disclaimer'],
+    ['overview', 'star', 'price', 'points', 'badges', 'meta', 'gallery', 'video', 'cta', 'internal_link', 'disclaimer'],
+    ['overview', 'points', 'badges', 'meta', 'star', 'price', 'gallery', 'video', 'cta', 'internal_link', 'disclaimer'],
+]
+
+# シリーズ物: 「前作との違い」の判断material（meta欄）を早めに見せた方が
+# 読者の判断に資するため、構成順を固定でこちらにする。
+_SERIES_FORWARD_ORDER = [
+    'overview', 'meta', 'points', 'badges', 'star', 'price', 'gallery', 'video', 'cta', 'internal_link', 'disclaimer'
+]
+# レビューが一定数以上ある作品: 「みんなの評価」を早めに見せて説得材料にする。
+_REVIEW_FORWARD_ORDER = [
+    'overview', 'star', 'meta', 'price', 'points', 'badges', 'gallery', 'video', 'cta', 'internal_link', 'disclaimer'
+]
+_REVIEW_FORWARD_THRESHOLD = 50  # このレビュー件数以上ならレビュー優先構成にする
+
+_OVERVIEW_HEADING_VARIANTS = ['作品の魅力', 'この作品はどんな内容？', '注目ポイントを先取り']
+_POINTS_HEADING_VARIANTS = ['✓ ここがポイント', '✓ チェックしておきたい特徴', '✓ 押さえておきたい魅力']
+_GALLERY_HEADING_VARIANTS = ['作品サンプル', 'サンプルをチェック', '気になる場面をプレビュー']
+
+# Gemini記事生成時にどの切り口を軸にするかのバリエーション。
+_APPEAL_PATTERNS = [
+    {
+        'name': '利用シーン訴求',
+        'instruction': (
+            "- どんな時間帯・気分・シチュエーションで読者がこの作品を楽しみたくなるか、"
+            "具体的な利用シーンを軸に描写してください\n"
+        ),
+    },
+    {
+        'name': 'ジャンル比較訴求',
+        'instruction': (
+            "- 似た系統の作品と比べたときに、このジャンルの組み合わせ・配分が"
+            "どう違って見えるかを軸に描写してください\n"
+        ),
+    },
+    {
+        'name': '作者・レーベル訴求',
+        'instruction': (
+            "- 制作元（サークル/メーカー/レーベル/監督）の作風の傾向や過去作との関係を"
+            "軸に描写してください（情報が乏しい場合はこの軸に固執しなくてよい）\n"
+        ),
+    },
+    {
+        'name': '読者タイプ訴求',
+        'instruction': (
+            "- どんな好み・経験を持つ読者に強く刺さるか／逆にどんな読者には物足りないかを"
+            "軸に描写してください\n"
+        ),
+    },
+]
+
+# 段落数・文字数・POINTS数のバリエーション（全記事が同じ分量にならないように）。
+_LENGTH_VARIANTS = [
+    {'paragraphs': '3〜4段落、700〜950文字程度', 'points_count': '3〜4個', 'points_max': 4},
+    {'paragraphs': '4〜5段落、900〜1150文字程度', 'points_count': '4〜5個', 'points_max': 5},
+    {'paragraphs': '4〜6段落、1000〜1300文字程度', 'points_count': '5〜6個', 'points_max': 6},
+]
 
 
 def _make_slug(content_id: str, title: str) -> str:
@@ -765,9 +899,35 @@ def _build_seo_title(product: dict, keyphrase: str = '', max_len: int = 32) -> s
     return f'{keyphrase} {title[:remaining].rstrip()}'
 
 
-def build_article(product: dict) -> dict:
+def build_article(product: dict, recent_openings: list = None) -> dict:
     focus_keyphrase = _build_focus_keyphrase(product)
-    body_content = get_article_body_ai(product, focus_keyphrase)
+
+    # 構成順・見出し・訴求パターン・分量は、content_id（無ければタイトル）を
+    # キーにした安定ハッシュで軸ごとに独立して選ぶ。これにより同じ作品は
+    # 再実行しても同じ組み合わせになる一方、記事間ではバラける。
+    variant_key = product.get('content_id') or product.get('title') or ''
+    heading_idx = _stable_variant_index(variant_key, 'heading', len(_OVERVIEW_HEADING_VARIANTS))
+    appeal_idx = _stable_variant_index(variant_key, 'appeal', len(_APPEAL_PATTERNS))
+    length_idx = _stable_variant_index(variant_key, 'length', len(_LENGTH_VARIANTS))
+    structure_idx = _stable_variant_index(variant_key, 'structure', len(_SECTION_ORDER_VARIANTS))
+
+    appeal_pattern = _APPEAL_PATTERNS[appeal_idx]
+    length_variant = _LENGTH_VARIANTS[length_idx]
+
+    # 構成順は、作品の情報の有無（シリーズ物か／レビューが多いか）を優先的に見て決める。
+    # 該当しない場合のみ、ハッシュによるローテーションにフォールバックする。
+    if product.get('series'):
+        section_order = _SERIES_FORWARD_ORDER
+    elif (product.get('review_avg') and (product.get('review_count') or 0) >= _REVIEW_FORWARD_THRESHOLD):
+        section_order = _REVIEW_FORWARD_ORDER
+    else:
+        section_order = _SECTION_ORDER_VARIANTS[structure_idx]
+
+    body_content = get_article_body_ai(
+        product, focus_keyphrase,
+        appeal_pattern=appeal_pattern, length_variant=length_variant,
+        recent_openings=recent_openings,
+    )
     seo_title = _build_seo_title(product, keyphrase=focus_keyphrase, max_len=20)
     # メタディスクリプション・抜粋の冒頭にキーフレーズを含める
     # （Yoastの「メタディスクリプション中のキーフレーズ」チェック対策）。
@@ -779,12 +939,14 @@ def build_article(product: dict) -> dict:
     else:
         excerpt = _base_excerpt
     overview_html = _paragraphs_to_html(body_content['overview'])
-    points_html = _points_list_html(body_content['points'])
+    points_html = _points_list_html(
+        body_content['points'], heading=_POINTS_HEADING_VARIANTS[heading_idx]
+    )
     genre_badges_html = _genre_badges_html(product.get('genres', []))
     star_html = _star_rating_html(product.get('review_avg'), product.get('review_count'))
     gallery_html = _sample_gallery_html(
         product.get('affiliate_url', ''), product.get('sample_images', []), product.get('title', ''),
-        focus_keyphrase
+        focus_keyphrase, heading=_GALLERY_HEADING_VARIANTS[heading_idx]
     )
     video_html = _sample_video_html(product.get('sample_movie_url', ''))
 
@@ -807,7 +969,7 @@ def build_article(product: dict) -> dict:
         )
 
     overview_section_html = (
-        '<h2 style="margin:14px 0 8px;font-size:17px;">作品の魅力</h2>'
+        f'<h2 style="margin:14px 0 8px;font-size:17px;">{escape(_OVERVIEW_HEADING_VARIANTS[heading_idx])}</h2>'
         '<div>'
         f'{overview_html}</div>'
     )
@@ -835,20 +997,23 @@ def build_article(product: dict) -> dict:
             f'他の{cat_label}作品もチェックする →</a></p>'
         )
 
+    # セクションを辞書として持ち、section_order（作品ごとに固定で決まる並び順）に
+    # 従って組み立てる。全記事が同じ順番にならないようにするための仕組み。
+    sections = {
+        'overview':      overview_section_html,
+        'meta':          meta_line_html,
+        'badges':        genre_badges_html,
+        'star':          star_html,
+        'price':         price_badge_html,
+        'points':        points_html,
+        'gallery':       gallery_html,
+        'video':         video_html,
+        'cta':           cta_html,
+        'internal_link': internal_link_html,
+        'disclaimer':    disclaimer_html,
+    }
     card_inner = '\n'.join(
-        part for part in [
-            overview_section_html,
-            meta_line_html,
-            genre_badges_html,
-            star_html,
-            price_badge_html,
-            points_html,
-            gallery_html,
-            video_html,
-            cta_html,
-            internal_link_html,
-            disclaimer_html,
-        ] if part
+        sections[name] for name in section_order if sections.get(name)
     )
 
     body_html = (
@@ -879,6 +1044,9 @@ def build_article(product: dict) -> dict:
         'focus_keyphrase':   focus_keyphrase,
         'seo_title':         seo_title,
         'affiliate_url':     product.get('affiliate_url', ''),
+        # WordPressには送らない。次回実行時の自己模倣防止プロンプト用に、
+        # 生成されたOVERVIEWの冒頭を投稿履歴へ記録するためだけに使う。
+        'overview_text':     body_content.get('overview', ''),
     }
 
 
@@ -1156,7 +1324,9 @@ def _parse_dmm_date(date_str):
 
 
 def main():
-    posted_history = load_posted_history()
+    history = load_posted_history()
+    posted_history = history['posted']
+    recent_openings = history['recent_openings']
     print(f'📚 投稿済み履歴: {len(posted_history)}件')
 
     now_jst = datetime.datetime.now(JST)
@@ -1254,11 +1424,16 @@ def main():
     posted = 0
     for p in safe_products:
         print(f"\n📝 記事生成中: {p['title'][:40]}（発売日/配信日: {p.get('date') or '不明'}）")
-        article = build_article(p)
+        article = build_article(p, recent_openings=recent_openings)
         if post_draft_to_wordpress(article):
             posted += 1
             posted_history.add(product_history_key(p))
-            save_posted_history(posted_history)
+            # 今回生成した書き出し冒頭を履歴に追加し、次回以降のAI生成で
+            # 同じような書き出しパターンが連続しないようにする。
+            opening = (article.get('overview_text') or '')[:40]
+            if opening:
+                recent_openings.append(opening)
+            save_posted_history(posted_history, recent_openings)
 
     print(f'\n✅ 完了！{posted}/{len(safe_products)} 件をWordPressに{WP_POST_STATUS}として投稿しました。')
     print(f'   📚 累計投稿履歴: {len(posted_history)}件（{POSTED_HISTORY_FILE}）')
