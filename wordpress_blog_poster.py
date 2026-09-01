@@ -48,6 +48,12 @@ WP_POST_STATUS   = os.environ.get('WP_POST_STATUS', 'draft').lower()
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 GEMINI_MODEL   = os.environ.get('GEMINI_MODEL', 'gemini-3.5-flash')
 
+# SEOタイトル／メタディスクリプションの冒頭にフォーカスキーフレーズ（出演者名・
+# ジャンル名等）を挿入するかどうか。true（デフォルト）なら従来どおり挿入する。
+# false にすると、SEOタイトルは作品タイトルそのまま、メタディスクリプションは
+# 作品の説明文（AI生成OVERVIEWの冒頭）のみになり、キーフレーズは一切含まれない。
+SEO_INCLUDE_KEYPHRASE = os.environ.get('SEO_INCLUDE_KEYPHRASE', 'true').strip().lower() not in ('false', '0', 'no')
+
 if not DMM_API_ID or not DMM_AFFILIATE_ID:
     print('❌ 環境変数 DMM_API_ID / DMM_AFFILIATE_ID が設定されていません。')
     sys.exit(1)
@@ -839,6 +845,18 @@ def _make_excerpt(title: str, max_len: int = 90) -> str:
     return plain
 
 
+def _make_description_excerpt(overview_text: str, fallback_title: str, max_len: int = 90) -> str:
+    """メタディスクリプション用に、AIが生成した本文（OVERVIEW）の冒頭から
+    プレーンテキストの説明文を作る。改行や段落区切りは単一スペースにまとめる。
+    OVERVIEWが空の場合（テンプレート運用時など）は、作品タイトルにフォールバックする。"""
+    plain = re.sub(r'\s+', ' ', (overview_text or '')).strip()
+    if not plain:
+        return _make_excerpt(fallback_title, max_len=max_len)
+    if len(plain) > max_len:
+        plain = plain[:max_len - 1].rstrip() + '…'
+    return plain
+
+
 _FOCUS_KEYPHRASE_EXCLUDE = {
     'ハイビジョン', '4K', '4k', 'ＨＤ', 'HD',
     '独占配信', '独占', '専売', '単体', '通販', 'DL版',
@@ -928,16 +946,26 @@ def build_article(product: dict, recent_openings: list = None) -> dict:
         appeal_pattern=appeal_pattern, length_variant=length_variant,
         recent_openings=recent_openings,
     )
-    seo_title = _build_seo_title(product, keyphrase=focus_keyphrase, max_len=20)
-    # メタディスクリプション・抜粋の冒頭にキーフレーズを含める
-    # （Yoastの「メタディスクリプション中のキーフレーズ」チェック対策）。
-    # 文字数は、Yoastが日本語（全角）を長めにカウントする傾向があるため、
+    # SEO_INCLUDE_KEYPHRASE=false の場合、SEOタイトル生成にキーフレーズを渡さない
+    # （_build_seo_titleはkeyphrase未指定だとタイトルそのままを返す）。
+    seo_title = _build_seo_title(
+        product,
+        keyphrase=(focus_keyphrase if SEO_INCLUDE_KEYPHRASE else ''),
+        max_len=20,
+    )
+
+    # メタディスクリプションは、作品の内容が伝わるようAI生成OVERVIEW（本文の概要部分）
+    # の冒頭を使う。文字数は、Yoastが日本語（全角）を長めにカウントする傾向があるため、
     # 「80文字を超えています」という警告が出ないよう余裕を持たせて55文字までに抑える。
-    _base_excerpt = _make_excerpt(product['title'], max_len=55)
-    if focus_keyphrase and focus_keyphrase not in product['title']:
-        excerpt = _make_excerpt(f'{focus_keyphrase}｜{product["title"]}', max_len=55)
+    overview_for_meta = body_content.get('overview', '')
+    if SEO_INCLUDE_KEYPHRASE and focus_keyphrase and focus_keyphrase not in overview_for_meta:
+        # キーフレーズがOVERVIEW冒頭に含まれていない場合のみ、Yoastのキーフレーズ
+        # チェック対策として先頭に付与する（作品説明そのものは維持する）。
+        excerpt = _make_description_excerpt(
+            f'{focus_keyphrase}｜{overview_for_meta}', product['title'], max_len=55,
+        )
     else:
-        excerpt = _base_excerpt
+        excerpt = _make_description_excerpt(overview_for_meta, product['title'], max_len=55)
     overview_html = _paragraphs_to_html(body_content['overview'])
     points_html = _points_list_html(
         body_content['points'], heading=_POINTS_HEADING_VARIANTS[heading_idx]
