@@ -1,0 +1,92 @@
+name: 過去投稿サンプル動画バックフィル
+
+# 過去に投稿済みの記事（<video>タグ埋め込みで再生できなかったもの／
+# サンプル動画セクションが未生成のまま投稿されたもの）に対して、
+# DMM APIからサンプル動画URLを再取得し、iframe埋め込みを後から追記する。
+#
+# 手動実行専用。誤って大量の記事を書き換えてしまわないよう、
+# デフォルトは DRY_RUN=true（書き込みなし・対象件数の確認のみ）にしている。
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'DRY RUN（true=書き込みなしで対象件数だけ確認 / false=実際にWordPressを更新）'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      backfill_limit:
+        description: '1回の実行で更新する記事数の上限'
+        required: false
+        default: '30'
+        type: string
+      content_type:
+        description: '対象コンテンツ種別（本体スクリプトの投稿時と同じ設定に合わせること）'
+        required: false
+        default: 'doujin'
+        type: choice
+        options:
+          - doujin
+          - av
+      wp_statuses:
+        description: '対象にするWordPress投稿ステータス（カンマ区切り）'
+        required: false
+        default: 'publish,draft,pending,private'
+        type: string
+      request_interval_sec:
+        description: 'DMM API／WordPressへのリクエスト間隔（秒）'
+        required: false
+        default: '1.0'
+        type: string
+
+jobs:
+  backfill-sample-video:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v3
+
+      - name: Pythonのセットアップ
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 依存ライブラリのインストール
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: 実行内容の確認表示
+        run: |
+          echo "DRY_RUN: ${{ github.event.inputs.dry_run }}"
+          echo "BACKFILL_LIMIT: ${{ github.event.inputs.backfill_limit }}"
+          echo "CONTENT_TYPE: ${{ github.event.inputs.content_type }}"
+          if [ "${{ github.event.inputs.dry_run }}" = "false" ]; then
+            echo "🚨 本番実行モードです。既存の公開記事の本文が書き換わります。"
+          else
+            echo "✅ DRY RUNモードです。書き込みは行われません。"
+          fi
+
+      - name: バックフィルスクリプトを実行
+        env:
+          DMM_API_ID:            ${{ secrets.DMM_API_ID }}
+          DMM_AFFILIATE_ID:      ${{ secrets.DMM_AFFILIATE_ID }}
+          WP_URL:                ${{ secrets.WP_URL }}
+          WP_USERNAME:           ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD:       ${{ secrets.WP_APP_PASSWORD }}
+          CONTENT_TYPE:          ${{ github.event.inputs.content_type || 'doujin' }}
+          DRY_RUN:               ${{ github.event.inputs.dry_run || 'true' }}
+          BACKFILL_LIMIT:        ${{ github.event.inputs.backfill_limit || '30' }}
+          BACKFILL_WP_STATUSES:  ${{ github.event.inputs.wp_statuses || 'publish,draft,pending,private' }}
+          REQUEST_INTERVAL_SEC:  ${{ github.event.inputs.request_interval_sec || '1.0' }}
+          # 本体スクリプト（wordpress_blog_poster.py）のimportに必要な必須環境変数。
+          # バックフィル自体では投稿は行わないが、モジュール読み込み時のチェックに使われる。
+          WP_POST_STATUS:        'draft'
+        run: python backfill_sample_video.py
