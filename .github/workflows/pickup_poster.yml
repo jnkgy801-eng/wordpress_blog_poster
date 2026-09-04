@@ -1,0 +1,78 @@
+name: FANZA 人気ランキング「ピックアップ」→ WordPress 自動投稿（週1回・AV限定）
+
+# wordpress_pickup_poster.py（wordpress_blog_poster.pyを複製した「ピックアップ」専用スクリプト、
+# 本体のwordpress_blog_poster.pyには手を加えていない）を使い、
+#   ・CONTENT_TYPE=av（AV限定）
+#   ・DMM_SORT_MODE=rank（人気ランキング順）
+#   ・CATEGORY_LABEL_OVERRIDE=ピックアップ（投稿先カテゴリーを「ピックアップ」に固定）
+# で実行する、1作品=1記事のピックアップ記事投稿ワークフロー。
+# 投稿済み履歴は他のワークフローと衝突しないよう専用ファイルに分離している。
+
+on:
+  schedule:
+    # 毎週月曜 UTC 0:00（日本時間 月曜9:00頃）に実行
+    - cron: '0 0 * * 1'
+  workflow_dispatch:
+    inputs:
+      max_articles:
+        description: '1回の実行で投稿する記事数の上限'
+        required: false
+        default: '5'
+        type: string
+      wp_post_status:
+        description: '投稿ステータス（publishは目視確認なしで即公開されるため要注意）'
+        required: false
+        default: 'draft'
+        type: choice
+        options:
+          - draft    # 下書き（デフォルト・必ず目視確認してから公開）
+          - pending  # 承認待ち
+          - publish  # 本公開
+
+concurrency:
+  group: wordpress-pickup-post
+  cancel-in-progress: false
+
+jobs:
+  post-pickup-drafts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+
+      - name: Pythonのセットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 依存ライブラリのインストール
+        run: pip install requests
+
+      - name: WordPressへ投稿（ピックアップ・人気ランキング順・AV限定・1作品=1記事）
+        env:
+          DMM_API_ID:             ${{ secrets.DMM_API_ID }}
+          DMM_AFFILIATE_ID:       ${{ secrets.DMM_AFFILIATE_ID }}
+          WP_URL:                 ${{ secrets.WP_URL }}
+          WP_USERNAME:            ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD:        ${{ secrets.WP_APP_PASSWORD }}
+          GEMINI_API_KEY:         ${{ secrets.GEMINI_API_KEY }}
+          # スケジュール実行（cron）時は github.event.inputs が空になるため、
+          # その場合のデフォルトをここで指定する（現在: draft = 下書き）。
+          WP_POST_STATUS:         ${{ github.event.inputs.wp_post_status || 'draft' }}
+          CONTENT_TYPE:           av
+          DMM_SORT_MODE:          rank
+          CATEGORY_LABEL_OVERRIDE: ピックアップ
+          # 他ワークフロー（wordpress_blog_post.yml等）と投稿済み履歴が混ざらないよう分離
+          POSTED_HISTORY_FILE:    outputs/posted_history_pickup.json
+          MAX_ARTICLES:           ${{ github.event.inputs.max_articles || '5' }}
+        run: python wordpress_pickup_poster.py
+
+      - name: 投稿履歴・除外ログをリポジトリにコミット
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          mkdir -p outputs
+          git add -A outputs/
+          git diff --quiet && git diff --staged --quiet || (git commit -m "🤖 ピックアップ自動投稿 履歴更新 ($(date +'%Y-%m-%d %H:%M:%S'))" && git push)
