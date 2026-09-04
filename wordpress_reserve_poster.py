@@ -54,7 +54,8 @@ WP_APP_PASSWORD  = os.environ.get('WP_APP_PASSWORD', '')         # アプリケ�
 # 記事内容・画像・年齢確認フィルターの精度に十分自信がある場合のみ使用してください。
 WP_POST_STATUS   = os.environ.get('WP_POST_STATUS', 'draft').lower()
 
-ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
+GEMINI_MODEL   = os.environ.get('GEMINI_MODEL', 'gemini-3.5-flash')
 
 if not DMM_API_ID or not DMM_AFFILIATE_ID:
     print('❌ 環境変数 DMM_API_ID / DMM_AFFILIATE_ID が設定されていません。')
@@ -331,6 +332,14 @@ def parse_product(item):
             sample_images = [u for u in images if u]
             break
 
+    # サンプル動画URL（記事に埋め込み用）。取得できるサイズを優先度順に探す。
+    sample_movie_url = ''
+    movie_block = item.get('sampleMovieURL', {}) or {}
+    for key in ('size_720_480', 'size_644_414', 'size_560_360', 'size_476_306'):
+        if movie_block.get(key):
+            sample_movie_url = movie_block[key]
+            break
+
     return {
         'content_id':    content_id,
         'title':         title,
@@ -344,6 +353,7 @@ def parse_product(item):
         'review_count':  review_count,
         'package_image': package_image,
         'sample_images': sample_images,
+        'sample_movie_url': sample_movie_url,
         'date':          item.get('date', ''),
     }
 
@@ -353,11 +363,15 @@ def parse_product(item):
 # ================================================================
 
 def get_article_body_ai(product: dict, focus_keyphrase: str = '') -> dict:
-    if ANTHROPIC_API_KEY:
+    if GEMINI_API_KEY:
         try:
             return _get_article_body_from_api(product, focus_keyphrase)
         except Exception as e:
             print(f'    ⚠️ AI記事生成エラー（テンプレート使用）: {e}')
+    else:
+        # GEMINI_API_KEY未設定に気づかないままテンプレート運用が続く事故を防ぐため、
+        # 実行のたびに明示的に警告を出す。
+        print('    ⚠️ GEMINI_API_KEY未設定のため、テンプレート文章を使用します。')
     return _get_article_body_template(product, focus_keyphrase)
 
 
@@ -430,22 +444,35 @@ def _get_article_body_from_api(product: dict, focus_keyphrase: str = '') -> dict
         "===POINTS===\n"
         "(「ここがポイント」として4〜5個、1行1項目、先頭に「- 」を付ける。各項目は40〜60文字程度で)\n"
     )
+    # Gemini API呼び出し（課金設定をしない限り無料枠で利用可能）
+    # 成人向け作品の紹介文であるため、性的表現に関する安全フィルタの閾値を
+    # 緩めておく（デフォルトのままだと、正当な業務利用でも出力がブロックされ
+    # 空文字やフォーマット崩れの応答になりやすい）。
     resp = requests.post(
-        'https://api.anthropic.com/v1/messages',
-        headers={
-            'x-api-key': ANTHROPIC_API_KEY,
-            'anthropic-version': '2023-06-01',
-            'content-type': 'application/json',
-        },
+        f'https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent',
+        params={'key': GEMINI_API_KEY},
+        headers={'content-type': 'application/json'},
         json={
-            'model': 'claude-haiku-4-5-20251001',
-            'max_tokens': 600,
-            'messages': [{'role': 'user', 'content': prompt}],
+            'contents': [{'parts': [{'text': prompt}]}],
+            'generationConfig': {
+                'maxOutputTokens': 2048,
+                'temperature': 0.9,
+                'thinkingConfig': {'thinkingBudget': 0},
+            },
+            'safetySettings': [
+                {'category': 'HARM_CATEGORY_SEXUALLY_EXPLICIT', 'threshold': 'BLOCK_NONE'},
+                {'category': 'HARM_CATEGORY_HARASSMENT',        'threshold': 'BLOCK_ONLY_HIGH'},
+                {'category': 'HARM_CATEGORY_HATE_SPEECH',       'threshold': 'BLOCK_ONLY_HIGH'},
+                {'category': 'HARM_CATEGORY_DANGEROUS_CONTENT', 'threshold': 'BLOCK_ONLY_HIGH'},
+            ],
         },
-        timeout=15,
+        timeout=30,
     )
     data = resp.json()
-    text = data.get('content', [{}])[0].get('text', '').strip()
+    try:
+        text = data['candidates'][0]['content']['parts'][0]['text'].strip()
+    except (KeyError, IndexError, TypeError):
+        text = ''
     if not text or '===OVERVIEW===' not in text or '===POINTS===' not in text:
         raise ValueError('unexpected AI response format')
 
@@ -704,6 +731,26 @@ def _build_seo_title(product: dict, keyphrase: str = '', max_len: int = 32) -> s
     return f'{keyphrase} {title[:remaining].rstrip()}'
 
 
+def _sample_video_html(sample_movie_url: str) -> str:
+    """サンプル動画の埋め込み。DMM APIからサンプル動画URLが取得できた作品のみ表示される。
+
+    DMM APIの sampleMovieURL は多くの場合、直接再生できる動画ファイル（.mp4等）ではなく、
+    litevideo等のプレイヤーページ（HTML）のURLを返す仕様のため、<video src="..."> ではなく
+    <iframe> で埋め込む（<video>のままだと再生されない/真っ黒になることがある）。"""
+    if not sample_movie_url:
+        return ''
+    return (
+        '<div class="ona-sample-video" style="margin:14px 0;">'
+        '<h3 style="margin:0 0 8px;font-size:15px;">サンプル動画</h3>'
+        '<div style="position:relative;width:100%;max-width:560px;aspect-ratio:560/360;">'
+        f'<iframe src="{escape(sample_movie_url)}" '
+        'style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;border-radius:8px;" '
+        'allow="autoplay; fullscreen" allowfullscreen loading="lazy"></iframe>'
+        '</div>'
+        '</div>'
+    )
+
+
 def build_article(product: dict) -> dict:
     focus_keyphrase = _build_focus_keyphrase(product)
     body_content = get_article_body_ai(product, focus_keyphrase)
@@ -725,6 +772,7 @@ def build_article(product: dict) -> dict:
         product.get('affiliate_url', ''), product.get('sample_images', []), product.get('title', ''),
         focus_keyphrase
     )
+    video_html = _sample_video_html(product.get('sample_movie_url', ''))
 
     meta_line_parts = []
     if product.get('maker'):
@@ -782,6 +830,7 @@ def build_article(product: dict) -> dict:
             price_badge_html,
             points_html,
             gallery_html,
+            video_html,
             cta_html,
             internal_link_html,
             disclaimer_html,
