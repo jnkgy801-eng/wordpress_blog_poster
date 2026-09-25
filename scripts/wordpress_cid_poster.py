@@ -386,19 +386,17 @@ def _points_list_html(points: list, heading: str = '✓ ここがポイント') 
     )
 
 
-def _recommend_for_html(recommends: list) -> str:
-    """「こんな人におすすめ」セクション。タグ風のチップで軽く見せる。"""
-    if not recommends:
+def _synopsis_html(overview_text: str) -> str:
+    """
+    「あらすじ」セクション。ymlで入力された作品概要（WORK_OVERVIEW）を
+    そのまま見出し付きで表示する（テンプレート文などは付け足さない）。
+    """
+    if not overview_text:
         return ''
-    chips = ''.join(
-        '<span style="display:inline-block;background:#eef6ff;color:#2b6cb0;'
-        'border:1px solid #bcdcff;padding:4px 12px;border-radius:999px;'
-        f'font-size:13px;margin:2px 4px 2px 0;">👤 {escape(r)}</span>'
-        for r in recommends
-    )
+    body = _paragraphs_to_html(overview_text)
     return (
-        '<h2 style="margin:0 0 8px;font-size:17px;">🙋 こんな人におすすめ</h2>'
-        f'<div>{chips}</div>'
+        '<h2 style="margin:0 0 8px;font-size:17px;">📝 あらすじ</h2>'
+        f'<div>{body}</div>'
     )
 
 
@@ -595,7 +593,7 @@ def build_article(product: dict) -> dict:
             '作品ページから購入手続きに進めます（ダウンロード形式）。</p>'
         )
 
-    recommend_section_html = _recommend_for_html(_build_recommend_for(product))
+    synopsis_section_html = _synopsis_html(WORK_OVERVIEW)
     caution_section_html = _caution_html(WORK_CAUTION)
 
     cta_html = (
@@ -638,7 +636,7 @@ def build_article(product: dict) -> dict:
     section_blocks = [
         _section(genre_section_html, is_first=True),
         _section(price_section_html),
-        _section(recommend_section_html),
+        _section(synopsis_section_html),
         _section(caution_section_html),
         _section(gallery_html),
         _section(video_html),
