@@ -785,7 +785,45 @@ def _upload_featured_image(image_url: str, content_id: str):
         return None
 
 
+def find_existing_post_by_slug(slug: str):
+    """
+    同じ品番（slug）の投稿が既に存在するかをWordPress側に問い合わせる。
+    status=any を指定することで、下書き（draft）や非公開の投稿も検索対象に含める
+    （公開済みの記事だけを見て「重複していない」と誤判定しないようにするため）。
+    見つかった場合はその投稿情報（id, link, status を含む辞書）を返し、
+    見つからなければ None を返す。
+    """
+    if not slug:
+        return None
+    endpoint = f'{WP_URL}/wp-json/wp/v2/posts'
+    try:
+        resp = requests.get(
+            endpoint,
+            params={'slug': slug, 'status': 'any', 'per_page': 1},
+            auth=_wp_auth(), headers=_JSON_HEADERS, timeout=15,
+        )
+        if resp.status_code != 200:
+            print(f'    ⚠️ 重複チェックに失敗しました status={resp.status_code}: {resp.text[:200]}'
+                  f'（チェックできなかったため、念のため投稿は続行します）')
+            return None
+        results = resp.json()
+        if isinstance(results, list) and results:
+            return results[0]
+        return None
+    except Exception as e:
+        print(f'    ⚠️ 重複チェック中にエラー: {e}（チェックできなかったため、念のため投稿は続行します）')
+        return None
+
+
 def post_draft_to_wordpress(article: dict) -> bool:
+    # ---- 同じ品番（slug）の投稿が既に存在する場合は、重複投稿しない ----
+    existing = find_existing_post_by_slug(article.get('slug', ''))
+    if existing:
+        print(f'    ⏭️ 品番「{article.get("content_id", "")}」（slug={article.get("slug", "")}）は'
+              f'既に投稿済みのためスキップします。'
+              f'（既存記事: status={existing.get("status")}, id={existing.get("id")}, link={existing.get("link", "")}）')
+        return None  # 新規作成しなかったことを呼び出し元が区別できるよう None を返す
+
     endpoint = f'{WP_URL}/wp-json/wp/v2/posts'
 
     category_label = article.get('category_label') or DEFAULT_CATEGORY
@@ -897,8 +935,12 @@ def main():
 
     print(f'\n📝 記事生成中...')
     article = build_article(product)
-    ok = post_draft_to_wordpress(article)
-    if ok:
+    result = post_draft_to_wordpress(article)
+    if result is None:
+        # 既に同じ品番が投稿済みだったためスキップしたケース。
+        # 異常事態ではないので、ワークフローは正常終了（exit code 0）扱いにする。
+        print('\n⏭️ 重複のためスキップしました（新規投稿は行っていません）。')
+    elif result:
         print(f'\n✅ 完了！WordPressに{WP_POST_STATUS}として投稿しました。')
         print('   ※ 公開前に必ず内容をご確認ください。')
     else:
