@@ -441,80 +441,166 @@ def _build_seo_title(product: dict, keyphrase: str = '', max_len: int = 32) -> s
 # 📝 記事の組み立て
 # ================================================================
 
+def _hero_html(product: dict) -> str:
+    """
+    カード最上部：パッケージ画像＋価格＋星評価＋CTAをまとめた
+    「ファーストビューで即決できる」エリア。
+    ここだけ見れば「どんな作品で、いくらで、評判はどうか」が分かるようにする。
+    """
+    img_html = ''
+    if product.get('package_image'):
+        img_html = (
+            f'<img src="{escape(product["package_image"])}" alt="{escape(product["title"])}" '
+            'style="width:100%;display:block;border-radius:12px 12px 0 0;" loading="lazy">'
+        )
+
+    quick_badges = []
+    if product.get('price'):
+        quick_badges.append(
+            '<span style="display:inline-block;background:#e0507a;color:#fff;'
+            'padding:5px 14px;border-radius:999px;font-size:14px;font-weight:bold;'
+            f'margin:0 6px 6px 0;">💰 {escape(product["price"])}</span>'
+        )
+    if product.get('review_avg') and product.get('review_count'):
+        quick_badges.append(
+            '<span style="display:inline-block;background:#fff3d6;color:#a67c00;'
+            'padding:5px 14px;border-radius:999px;font-size:14px;font-weight:bold;'
+            f'margin:0 6px 6px 0;">⭐ {product["review_avg"]}（{product["review_count"]}件）</span>'
+        )
+    quick_badges_html = ''.join(quick_badges)
+
+    hero_cta = (
+        '<div style="text-align:center;margin-top:10px;">'
+        f'<a href="{escape(product["affiliate_url"])}" target="_blank" rel="nofollow" '
+        'style="display:inline-block;padding:12px 32px;background:linear-gradient(135deg,#ff6f91,#e0507a);'
+        'color:#fff;text-decoration:none;border-radius:999px;font-size:15px;font-weight:bold;'
+        'box-shadow:0 4px 12px rgba(224,80,122,0.35);">'
+        '🔥 今すぐ作品ページをチェック</a></div>'
+    )
+
+    return (
+        '<div style="margin:-20px -20px 0;">'
+        f'{img_html}'
+        '<div style="padding:14px 20px 4px;text-align:center;">'
+        f'{quick_badges_html}'
+        f'{hero_cta}'
+        '</div></div>'
+    )
+
+
+def _section(inner_html: str, is_first: bool = False) -> str:
+    """
+    セクションを区切り線付きのブロックで包む。
+    見出し単位で視覚的に区切ることで、情報のまとまりを把握しやすくする。
+    """
+    if not inner_html:
+        return ''
+    if is_first:
+        style = 'margin-top:18px;'
+    else:
+        style = 'margin-top:18px;padding-top:18px;border-top:1px dashed #e5c6d3;'
+    return f'<div style="{style}">{inner_html}</div>'
+
+
 def build_article(product: dict) -> dict:
     focus_keyphrase = _build_focus_keyphrase(product)
+    genre_str = '、'.join(product.get('genres', [])[:3]) or '注目'
 
-    # 概要は「人間が入力したWORK_OVERVIEW」をそのまま冒頭に使い、
-    # その後ろに興味を引くための一文（クロージング）を自動で添える。
-    overview_text = f'{WORK_OVERVIEW}\n\n{_build_closing_line(product)}'
+    # ---- 概要セクション: 冒頭文にフォーカスキーフレーズと作品名を必ず含める ----
+    # （Yoastの「冒頭のキーフレーズ」チェック対策。GSC上のクエリ一致率向上にも寄与）
+    lead_sentence = (
+        f'今回紹介するのは「{focus_keyphrase}」が魅力の{DEFAULT_CATEGORY}作品'
+        f'『{product["title"]}』です。'
+    )
+    overview_text = f'{lead_sentence}\n\n{WORK_OVERVIEW}\n\n{_build_closing_line(product)}'
     overview_html = _paragraphs_to_html(overview_text)
 
     points = _build_auto_points(product)
-    points_html = _points_list_html(points)
+    points_html = _points_list_html(points, heading='✓ ここがポイント')
     genre_badges_html = _genre_badges_html(product.get('genres', []))
-    star_html = _star_rating_html(product.get('review_avg'), product.get('review_count'))
     gallery_html = _sample_gallery_html(
-        product.get('affiliate_url', ''), product.get('sample_images', []), product.get('title', '')
+        product.get('affiliate_url', ''), product.get('sample_images', []), product.get('title', ''),
+        heading='📸 作品サンプル',
     )
     video_html = _sample_video_html(product.get('sample_movie_url', ''))
 
-    meta_line_parts = []
-    if product.get('maker'):
-        meta_line_parts.append(f'サークル: {escape(product["maker"])}')
     meta_line_html = ''
-    if meta_line_parts:
+    if product.get('maker'):
         meta_line_html = (
             '<div style="color:#666;font-size:13px;margin:4px 0 10px;">'
-            + ' ／ '.join(meta_line_parts) + '</div>'
+            f'🏷️ サークル: {escape(product["maker"])}</div>'
         )
 
-    price_badge_html = ''
-    if product.get('price'):
-        price_badge_html = (
-            '<div style="display:inline-block;background:#fff0f5;color:#e0507a;'
-            'border:1px solid #ffc2d6;border-radius:8px;padding:6px 14px;'
-            f'font-size:15px;font-weight:bold;margin:10px 0;">価格 {escape(product["price"])}</div>'
-        )
-
+    # ---- H2見出しでセクションを分割する ----
+    # 1つの<h2>に情報を詰め込みすぎず、検索クエリと一致しやすい見出しを
+    # 複数用意することで、記事の網羅性・構造の分かりやすさを高める。
+    # 絵文字を付けることでスキャン（流し読み）時の視線誘導をしやすくする。
     overview_section_html = (
-        '<h2 style="margin:14px 0 8px;font-size:17px;">作品の魅力</h2>'
+        f'<h2 style="margin:0 0 8px;font-size:17px;">📖 『{escape(product["title"])}』はどんな作品？</h2>'
         f'<div>{overview_html}</div>'
+        f'{meta_line_html}'
     )
 
+    genre_section_html = ''
+    if product.get('genres'):
+        genre_section_html = (
+            '<h2 style="margin:0 0 8px;font-size:17px;">🎯 ジャンル・見どころ</h2>'
+            f'{genre_badges_html}'
+        )
+
+    price_section_html = ''
+    if product.get('price'):
+        price_section_html = (
+            '<h2 style="margin:0 0 8px;font-size:17px;">💰 価格・購入方法</h2>'
+            '<div style="display:inline-block;background:#fff0f5;color:#e0507a;'
+            'border:1px solid #ffc2d6;border-radius:8px;padding:6px 14px;'
+            f'font-size:15px;font-weight:bold;margin:6px 0;">価格 {escape(product["price"])}</div>'
+            '<p style="font-size:13px;color:#666;margin-top:6px;">'
+            '作品ページから購入手続きに進めます（ダウンロード形式）。</p>'
+        )
+
+    points_section_html = points_html  # 見出しは_points_list_html内で既に付与済み
+
     cta_html = (
-        '<div style="text-align:center;margin:20px 0 8px;">'
+        '<div style="text-align:center;">'
         f'<a href="{escape(product["affiliate_url"])}" target="_blank" rel="nofollow" '
         'style="display:inline-block;padding:14px 36px;background:linear-gradient(135deg,#ff6f91,#e0507a);'
         'color:#fff;text-decoration:none;border-radius:999px;font-size:16px;font-weight:bold;'
         'box-shadow:0 4px 12px rgba(224,80,122,0.35);">'
-        '▶ 作品ページを見る</a></div>'
+        f'▶「{escape(product["title"][:20])}」の作品ページを見る</a></div>'
     )
 
-    disclaimer_html = (
-        '<p style="color:#999;font-size:12px;line-height:1.6;margin-top:16px;">'
-        '※成人向けコンテンツを含みます。18歳未満の方はご利用いただけません。</p>'
-    )
-
-    internal_link_html = ''
+    footer_html = ''
+    footer_parts = []
     if WP_URL:
-        internal_link_html = (
-            f'<p style="font-size:13px;margin-top:14px;">'
+        footer_parts.append(
+            f'<p style="font-size:13px;margin:14px 0 0;text-align:center;">'
             f'<a href="{escape(WP_URL)}/category/{escape(WORK_CATEGORY_LABEL)}/">'
             f'他の{escape(WORK_CATEGORY_LABEL)}作品もチェックする →</a></p>'
         )
+    footer_parts.append(
+        '<p style="color:#999;font-size:12px;line-height:1.6;margin:10px 0 0;text-align:center;">'
+        '※成人向けコンテンツを含みます。18歳未満の方はご利用いただけません。</p>'
+    )
+    footer_html = ''.join(footer_parts)
 
-    # レビューが多い作品は星評価を早めに見せる方が説得力があるため、
-    # シンプルな2パターンの構成順を用意する。
-    if product.get('review_avg') and (product.get('review_count') or 0) >= 50:
-        section_order = [overview_section_html, star_html, meta_line_html, price_badge_html,
-                          points_html, genre_badges_html, gallery_html, video_html,
-                          cta_html, internal_link_html, disclaimer_html]
-    else:
-        section_order = [overview_section_html, meta_line_html, genre_badges_html, star_html,
-                          price_badge_html, points_html, gallery_html, video_html,
-                          cta_html, internal_link_html, disclaimer_html]
+    # ---- ヒーローエリア（画像＋価格＋星評価＋CTA）は必ず最初に置く ----
+    hero_html = _hero_html(product)
 
-    card_inner = '\n'.join(filter(None, section_order))
+    # レビューが多い作品は星評価をヒーローエリアに含めているため、
+    # 本文側では星評価バッジを重複させず、その分ジャンルを少し前に出す。
+    section_blocks = [
+        _section(overview_section_html, is_first=True),
+        _section(genre_section_html),
+        _section(price_section_html),
+        _section(points_section_html),
+        _section(gallery_html),
+        _section(video_html),
+        _section(cta_html),
+        footer_html,
+    ]
+
+    card_inner = hero_html + '\n'.join(filter(None, section_blocks))
 
     body_html = (
         '<div style="max-width:600px;margin:0 auto;padding:20px;border:1px solid #eee;'
