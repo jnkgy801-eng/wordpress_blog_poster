@@ -557,17 +557,6 @@ def build_article(product: dict) -> dict:
     focus_keyphrase = _build_focus_keyphrase(product)
     genre_str = '、'.join(product.get('genres', [])[:3]) or '注目'
 
-    # ---- 概要セクション: 冒頭文にフォーカスキーフレーズと作品名を必ず含める ----
-    # （Yoastの「冒頭のキーフレーズ」チェック対策。GSC上のクエリ一致率向上にも寄与）
-    lead_sentence = (
-        f'今回紹介するのは「{focus_keyphrase}」が魅力の{DEFAULT_CATEGORY}作品'
-        f'『{product["title"]}』です。'
-    )
-    overview_text = f'{lead_sentence}\n\n{WORK_OVERVIEW}\n\n{_build_closing_line(product)}'
-    overview_html = _paragraphs_to_html(overview_text)
-
-    points = _build_auto_points(product)
-    points_html = _points_list_html(points, heading='✓ ここがポイント')
     genre_badges_html = _genre_badges_html(product.get('genres', []))
     gallery_html = _sample_gallery_html(
         product.get('affiliate_url', ''), product.get('sample_images', []), product.get('title', ''),
@@ -578,25 +567,21 @@ def build_article(product: dict) -> dict:
     meta_line_html = ''
     if product.get('maker'):
         meta_line_html = (
-            '<div style="color:#666;font-size:13px;margin:4px 0 10px;">'
+            '<div style="color:#666;font-size:13px;margin:0;">'
             f'🏷️ サークル: {escape(product["maker"])}</div>'
         )
 
     # ---- H2見出しでセクションを分割する ----
-    # 1つの<h2>に情報を詰め込みすぎず、検索クエリと一致しやすい見出しを
-    # 複数用意することで、記事の網羅性・構造の分かりやすさを高める。
-    # 絵文字を付けることでスキャン（流し読み）時の視線誘導をしやすくする。
-    overview_section_html = (
-        f'<h2 style="margin:0 0 8px;font-size:17px;">📖 『{escape(product["title"])}』はどんな作品？</h2>'
-        f'<div>{overview_html}</div>'
-        f'{meta_line_html}'
-    )
-
+    # ※「どんな作品？」セクションと「ここがポイント」セクションは
+    #   投稿しない方針のため、本文には含めない（build_article内では
+    #   points等は算出だけしておき、_build_recommend_for()等の他の
+    #   セクションの材料としてのみ使う）。
     genre_section_html = ''
     if product.get('genres'):
         genre_section_html = (
             '<h2 style="margin:0 0 8px;font-size:17px;">🎯 ジャンル・見どころ</h2>'
             f'{genre_badges_html}'
+            f'{meta_line_html}'
         )
 
     price_section_html = ''
@@ -609,8 +594,6 @@ def build_article(product: dict) -> dict:
             '<p style="font-size:13px;color:#666;margin-top:6px;">'
             '作品ページから購入手続きに進めます（ダウンロード形式）。</p>'
         )
-
-    points_section_html = points_html  # 見出しは_points_list_html内で既に付与済み
 
     recommend_section_html = _recommend_for_html(_build_recommend_for(product))
     caution_section_html = _caution_html(WORK_CAUTION)
@@ -650,13 +633,11 @@ def build_article(product: dict) -> dict:
     # ---- ヒーローエリア（画像＋価格＋星評価＋CTA）は必ず最初に置く ----
     hero_html = _hero_html(product)
 
-    # レビューが多い作品は星評価をヒーローエリアに含めているため、
-    # 本文側では星評価バッジを重複させず、その分ジャンルを少し前に出す。
+    # 「どんな作品？」「ここがポイント」の2セクションは投稿しないため、
+    # ジャンルセクションを先頭（is_first=True）にする。
     section_blocks = [
-        _section(overview_section_html, is_first=True),
-        _section(genre_section_html),
+        _section(genre_section_html, is_first=True),
         _section(price_section_html),
-        _section(points_section_html),
         _section(recommend_section_html),
         _section(caution_section_html),
         _section(gallery_html),
@@ -859,9 +840,15 @@ def post_draft_to_wordpress(article: dict) -> bool:
     if meta:
         payload['meta'] = meta
 
-    media_id = _upload_featured_image(article.get('featured_image_url', ''), article.get('content_id', ''))
-    if media_id:
-        payload['featured_media'] = media_id
+    # ---- アイキャッチ画像は設定しない ----
+    # 記事上部（一覧ページの投稿一覧・個別記事のタイトル上）に表示される
+    # WordPressのアイキャッチ画像は、本文カード内のヒーロー画像と見た目が
+    # 重複するため、あえて featured_media を設定しない。
+    # （_upload_featured_image() 関数自体は残してあるので、必要になれば
+    #   下の2行のコメントアウトを外せば復活できる）
+    # media_id = _upload_featured_image(article.get('featured_image_url', ''), article.get('content_id', ''))
+    # if media_id:
+    #     payload['featured_media'] = media_id
 
     try:
         resp = requests.post(
