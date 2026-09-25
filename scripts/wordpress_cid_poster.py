@@ -62,9 +62,14 @@ WP_APP_PASSWORD = os.environ.get('WP_APP_PASSWORD', '')
 
 WP_POST_STATUS = os.environ.get('WP_POST_STATUS', 'draft').lower()
 
-# --- 人間が入力する項目はこの2つだけ ---------------------------------
-WORK_CONTENT_ID = os.environ.get('WORK_CONTENT_ID', '').strip()   # 品番
-WORK_OVERVIEW   = os.environ.get('WORK_OVERVIEW', '').strip()     # 作品概要（自分の言葉での紹介文）
+# --- 人間が入力する項目 -------------------------------------------------
+WORK_CONTENT_ID = os.environ.get('WORK_CONTENT_ID', '').strip()   # 品番（必須）
+WORK_OVERVIEW   = os.environ.get('WORK_OVERVIEW', '').strip()     # 作品概要（必須）
+WORK_CAUTION    = os.environ.get('WORK_CAUTION', '').strip()      # 気になる点・注意点（任意）
+                                                                    # 「公式が謳っていないデメリットやリスクも
+                                                                    # 書くと信頼性が上がる」という商品レビュー記事の
+                                                                    # セオリーに対応した任意項目。入力が無ければ
+                                                                    # セクション自体を出さない（嘘の欠点は作らない）。
 
 # コンテンツ種別（品番の検索対象floorを決める）。doujin（同人）/ av（動画）
 CONTENT_TYPE = os.environ.get('CONTENT_TYPE', 'doujin').strip().lower()
@@ -285,6 +290,22 @@ def _build_auto_points(product: dict) -> list:
     return points[:6]
 
 
+def _build_recommend_for(product: dict) -> list:
+    """
+    「こんな人におすすめ」を自動生成する。
+    ジャンルタグをそのまま「〇〇が好きな人」に変換するだけのシンプルな方式。
+    レビュー参考記事の「どんな人にオススメか」を明記すべき、という指摘に対応。
+    """
+    recommends = []
+    for g in (product.get('genres') or [])[:4]:
+        recommends.append(f'{g}が好きな人')
+    if product.get('review_avg') and (product.get('review_count') or 0) >= 30:
+        recommends.append('レビュー件数が多い、実績のある作品を選びたい人')
+    if product.get('series'):
+        recommends.append(f'「{product["series"]}」シリーズが気になっている人')
+    return recommends[:5]
+
+
 def _build_closing_line(product: dict) -> str:
     key = product.get('content_id') or product.get('title') or ''
     return _stable_pick(_OVERVIEW_CLOSERS, key) or _OVERVIEW_CLOSERS[0]
@@ -362,6 +383,36 @@ def _points_list_html(points: list, heading: str = '✓ ここがポイント') 
         f'<h2 class="ona-points-title" style="margin:0 0 8px;font-size:16px;">{escape(heading)}</h2>'
         f'<ul style="margin:0;padding-left:20px;">{items}</ul>'
         '</div>'
+    )
+
+
+def _recommend_for_html(recommends: list) -> str:
+    """「こんな人におすすめ」セクション。タグ風のチップで軽く見せる。"""
+    if not recommends:
+        return ''
+    chips = ''.join(
+        '<span style="display:inline-block;background:#eef6ff;color:#2b6cb0;'
+        'border:1px solid #bcdcff;padding:4px 12px;border-radius:999px;'
+        f'font-size:13px;margin:2px 4px 2px 0;">👤 {escape(r)}</span>'
+        for r in recommends
+    )
+    return (
+        '<h2 style="margin:0 0 8px;font-size:17px;">🙋 こんな人におすすめ</h2>'
+        f'<div>{chips}</div>'
+    )
+
+
+def _caution_html(caution_text: str) -> str:
+    """
+    「気になる点・注意点」セクション。手動入力(WORK_CAUTION)がある場合のみ表示する。
+    レビュー記事の信頼性向上（公式が言わないデメリットも書く）に対応した任意項目。
+    """
+    if not caution_text:
+        return ''
+    body = _paragraphs_to_html(caution_text)
+    return (
+        '<h2 style="margin:0 0 8px;font-size:17px;">⚠️ ここは事前に知っておきたいポイント</h2>'
+        f'<div>{body}</div>'
     )
 
 
@@ -561,6 +612,9 @@ def build_article(product: dict) -> dict:
 
     points_section_html = points_html  # 見出しは_points_list_html内で既に付与済み
 
+    recommend_section_html = _recommend_for_html(_build_recommend_for(product))
+    caution_section_html = _caution_html(WORK_CAUTION)
+
     cta_html = (
         '<div style="text-align:center;">'
         f'<a href="{escape(product["affiliate_url"])}" target="_blank" rel="nofollow" '
@@ -578,6 +632,15 @@ def build_article(product: dict) -> dict:
             f'<a href="{escape(WP_URL)}/category/{escape(WORK_CATEGORY_LABEL)}/">'
             f'他の{escape(WORK_CATEGORY_LABEL)}作品もチェックする →</a></p>'
         )
+        # レビュー記事から比較・ランキング的なページへの内部リンクは
+        # SEO・回遊率の両面で有効なため、先頭ジャンルのタグアーカイブにもリンクする。
+        first_genre = (product.get('genres') or [None])[0]
+        if first_genre:
+            footer_parts.append(
+                f'<p style="font-size:13px;margin:4px 0 0;text-align:center;">'
+                f'<a href="{escape(WP_URL)}/tag/{escape(urllib.parse.quote(first_genre))}/">'
+                f'「{escape(first_genre)}」の他の作品も見る →</a></p>'
+            )
     footer_parts.append(
         '<p style="color:#999;font-size:12px;line-height:1.6;margin:10px 0 0;text-align:center;">'
         '※成人向けコンテンツを含みます。18歳未満の方はご利用いただけません。</p>'
@@ -594,6 +657,8 @@ def build_article(product: dict) -> dict:
         _section(genre_section_html),
         _section(price_section_html),
         _section(points_section_html),
+        _section(recommend_section_html),
+        _section(caution_section_html),
         _section(gallery_html),
         _section(video_html),
         _section(cta_html),
