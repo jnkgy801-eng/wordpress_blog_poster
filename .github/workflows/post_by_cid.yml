@@ -13,6 +13,10 @@ on:
       work_overview:
         description: "【必須】作品概要（自分の言葉での紹介文。1〜2文でも可）"
         required: true
+      work_caution:
+        description: "気になる点・注意点（任意。正直な一言があれば信頼性が上がります）"
+        required: false
+        default: ""
       work_category_label:
         description: "投稿カテゴリー名（空欄なら作品種別に応じて自動設定）"
         required: false
@@ -52,5 +56,6 @@ jobs:
           CONTENT_TYPE: ${{ github.event.inputs.content_type }}
           WORK_CONTENT_ID: ${{ github.event.inputs.work_content_id }}
           WORK_OVERVIEW: ${{ github.event.inputs.work_overview }}
+          WORK_CAUTION: ${{ github.event.inputs.work_caution }}
           WORK_CATEGORY_LABEL: ${{ github.event.inputs.work_category_label }}
         run: python scripts/wordpress_cid_poster.py
