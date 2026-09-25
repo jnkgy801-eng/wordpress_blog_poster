@@ -876,15 +876,14 @@ def post_draft_to_wordpress(article: dict) -> bool:
     if meta:
         payload['meta'] = meta
 
-    # ---- アイキャッチ画像は設定しない ----
-    # 記事上部（一覧ページの投稿一覧・個別記事のタイトル上）に表示される
-    # WordPressのアイキャッチ画像は、本文カード内のヒーロー画像と見た目が
-    # 重複するため、あえて featured_media を設定しない。
-    # （_upload_featured_image() 関数自体は残してあるので、必要になれば
-    #   下の2行のコメントアウトを外せば復活できる）
-    # media_id = _upload_featured_image(article.get('featured_image_url', ''), article.get('content_id', ''))
-    # if media_id:
-    #     payload['featured_media'] = media_id
+    # ---- アイキャッチ画像を設定する ----
+    # トップページのグリッド表示（get_the_post_thumbnail()）で使うため、
+    # アイキャッチ自体は引き続き設定する。個別記事ページのタイトル上に
+    # 自動表示される画像は、CSS側（body.single .post-image を非表示）で
+    # 見た目だけ消す方針にしている（データとしては保持する）。
+    media_id = _upload_featured_image(article.get('featured_image_url', ''), article.get('content_id', ''))
+    if media_id:
+        payload['featured_media'] = media_id
 
     try:
         resp = requests.post(
