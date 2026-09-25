@@ -1,0 +1,56 @@
+name: Post to WordPress by CID (品番＋概要だけで投稿)
+
+on:
+  workflow_dispatch:
+    inputs:
+      content_type:
+        description: "作品種別（doujin=同人 / av=動画）"
+        required: false
+        default: "doujin"
+      work_content_id:
+        description: "【必須】品番（例: d_123456）"
+        required: true
+      work_overview:
+        description: "【必須】作品概要（自分の言葉での紹介文。1〜2文でも可）"
+        required: true
+      work_category_label:
+        description: "投稿カテゴリー名（空欄なら作品種別に応じて自動設定）"
+        required: false
+        default: ""
+      wp_post_status:
+        description: "投稿ステータス（draft / pending / publish）"
+        required: false
+        default: "draft"
+
+permissions:
+  contents: read
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Post to WordPress (by content_id)
+        env:
+          DMM_API_ID: ${{ secrets.DMM_API_ID }}
+          DMM_AFFILIATE_ID: ${{ secrets.DMM_AFFILIATE_ID }}
+          WP_URL: ${{ secrets.WP_URL }}
+          WP_USERNAME: ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD: ${{ secrets.WP_APP_PASSWORD }}
+          WP_POST_STATUS: ${{ github.event.inputs.wp_post_status }}
+          CONTENT_TYPE: ${{ github.event.inputs.content_type }}
+          WORK_CONTENT_ID: ${{ github.event.inputs.work_content_id }}
+          WORK_OVERVIEW: ${{ github.event.inputs.work_overview }}
+          WORK_CATEGORY_LABEL: ${{ github.event.inputs.work_category_label }}
+        run: python scripts/wordpress_cid_poster.py
