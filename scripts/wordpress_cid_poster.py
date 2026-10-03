@@ -34,11 +34,14 @@ WordPress REST APIへ下書き（draft）として投稿する。
 
 import os
 import re
+import html
 import sys
 import json
 import datetime
 import urllib.parse
 from xml.sax.saxutils import escape
+
+from typing import Optional
 
 import requests
 
@@ -47,7 +50,7 @@ JST = datetime.timezone(datetime.timedelta(hours=9))
 # ================================================================
 # 📌 スクリプトバージョン（デプロイ確認用）
 # ================================================================
-SCRIPT_VERSION = '2026-09-25-cid-01'
+SCRIPT_VERSION = '2026-10-04-cid-02-seo'
 
 # ================================================================
 # ⚙️ 設定（環境変数から読み込み）
@@ -83,7 +86,7 @@ if CONTENT_TYPE not in _CONTENT_TYPE_TARGETS:
 SERVICE            = _CONTENT_TYPE_TARGETS[CONTENT_TYPE]['service']
 FLOOR              = _CONTENT_TYPE_TARGETS[CONTENT_TYPE]['floor']
 DEFAULT_CATEGORY   = _CONTENT_TYPE_TARGETS[CONTENT_TYPE]['label']
-WORK_CATEGORY_LABEL = os.environ.get('WORK_CATEGORY_LABEL', DEFAULT_CATEGORY).strip()
+WORK_CATEGORY_LABEL = (os.environ.get('WORK_CATEGORY_LABEL') or DEFAULT_CATEGORY).strip()
 
 if not DMM_API_ID or not DMM_AFFILIATE_ID:
     print('❌ 環境変数 DMM_API_ID / DMM_AFFILIATE_ID が設定されていません。')
@@ -105,6 +108,12 @@ if not WORK_OVERVIEW:
     print('❌ 環境変数 WORK_OVERVIEW（作品概要）が設定されていません。')
     sys.exit(1)
 
+# 薄いコンテンツ（テンプレ文＋画像のみ）はGSCで評価されにくいため、独自文章の分量を促す
+MIN_OVERVIEW_CHARS = 100
+if len(WORK_OVERVIEW) < MIN_OVERVIEW_CHARS:
+    print(f'⚠️ 作品概要が{len(WORK_OVERVIEW)}文字です。独自の文章が少ないと検索評価が伸びにくいため、'
+          f'{MIN_OVERVIEW_CHARS}文字以上（感想・見どころ・誰向けか）を推奨します。')
+
 print('✅ 認証情報を読み込みました。')
 print(f'🏷️ スクリプトバージョン: {SCRIPT_VERSION}')
 print(f'📌 品番: {WORK_CONTENT_ID}（{DEFAULT_CATEGORY}／service={SERVICE}, floor={FLOOR}）')
@@ -114,6 +123,9 @@ else:
     print(f'📌 投稿ステータス: {WP_POST_STATUS}（公開は必ず手動で行ってください）')
 
 DMM_API_BASE = 'https://api.dmm.com/affiliate/v3'
+
+# アフィリエイトリンクにはGoogle推奨の rel="sponsored" を付与する
+LINK_REL = 'sponsored nofollow noopener'
 
 
 # ================================================================
@@ -311,19 +323,11 @@ def _build_closing_line(product: dict) -> str:
     return _stable_pick(_OVERVIEW_CLOSERS, key) or _OVERVIEW_CLOSERS[0]
 
 
-def _build_focus_keyphrase(product: dict, max_words: int = 2, max_chars: int = 12) -> str:
-    words = []
-    for g in (product.get('genres') or []):
-        if len(words) >= max_words:
-            break
-        g = (g or '').strip()
-        if g and len(g) > 1 and g not in words:
-            words.append(g)
-    if not words and product.get('maker'):
-        words.append(product['maker'].strip())
-    while len(words) > 1 and len(' '.join(words)) > max_chars:
-        words.pop()
-    return ' '.join(words[:max_words])
+def _build_focus_keyphrase(product: dict, max_chars: int = 20) -> str:
+    """検索は作品名での指名検索が中心のため、フォーカスキーフレーズは作品名ベースにする。"""
+    title = re.sub(r'[【】\[\]（）()]', ' ', product.get('title') or '')
+    title = re.sub(r'\s+', ' ', title).strip()
+    return title[:max_chars].rstrip()
 
 
 # ================================================================
@@ -386,30 +390,24 @@ def _points_list_html(points: list, heading: str = '✓ ここがポイント') 
     )
 
 
-def _synopsis_html(overview_text: str) -> str:
-    """
-    「あらすじ」セクション。ymlで入力された作品概要（WORK_OVERVIEW）を
-    そのまま見出し付きで表示する（テンプレート文などは付け足さない）。
-    """
+def _synopsis_html(overview_text: str, short_title: str = '') -> str:
+    """「あらすじ・概要」セクション。H2に作品名を含め、検索意図（作品名＋あらすじ）に対応する。"""
     if not overview_text:
         return ''
     body = _paragraphs_to_html(overview_text)
     return (
-        '<h2 style="margin:0 0 8px;font-size:17px;">📝 あらすじ</h2>'
+        f'<h2 style="margin:0 0 8px;font-size:17px;">📝 {escape(short_title)}のあらすじ・概要</h2>'
         f'<div>{body}</div>'
     )
 
 
-def _caution_html(caution_text: str) -> str:
-    """
-    「気になる点・注意点」セクション。手動入力(WORK_CAUTION)がある場合のみ表示する。
-    レビュー記事の信頼性向上（公式が言わないデメリットも書く）に対応した任意項目。
-    """
+def _caution_html(caution_text: str, short_title: str = '') -> str:
+    """「気になる点」セクション。手動入力(WORK_CAUTION)がある場合のみ表示する（独自性・信頼性の担保）。"""
     if not caution_text:
         return ''
     body = _paragraphs_to_html(caution_text)
     return (
-        '<h2 style="margin:0 0 8px;font-size:17px;">⚠️ ここは事前に知っておきたいポイント</h2>'
+        f'<h2 style="margin:0 0 8px;font-size:17px;">⚠️ {escape(short_title)}の気になる点</h2>'
         f'<div>{body}</div>'
     )
 
@@ -421,9 +419,9 @@ def _sample_gallery_html(affiliate_url: str, sample_images: list, title: str,
         return ''
     cells = []
     for i, url in enumerate(imgs):
-        alt_text = f'{title} サンプル画像' if i == 0 else f'サンプル画像{i + 1}'
+        alt_text = f'{title} サンプル画像{i + 1}'
         cells.append(
-            f'<a href="{escape(affiliate_url)}" target="_blank" rel="nofollow" class="ona-sample-cell">'
+            f'<a href="{escape(affiliate_url)}" target="_blank" rel="{LINK_REL}" class="ona-sample-cell">'
             f'<img src="{escape(url)}" alt="{escape(alt_text)}" loading="lazy" class="ona-sample-img"></a>'
         )
     return (
@@ -474,16 +472,25 @@ def _make_description_excerpt(overview_text: str, fallback_title: str, max_len: 
     return plain
 
 
-def _build_seo_title(product: dict, keyphrase: str = '', max_len: int = 32) -> str:
+def _build_seo_title(product: dict, suffix: str = ' レビュー・感想', max_len: int = 34) -> str:
+    """
+    「作品名 + 検索意図ワード（レビュー・感想）」のtitleタグを作る。
+    作品名を先頭に置き、長い場合は作品名側を切り詰めてsuffixは残す。
+    """
     title = (product.get('title') or '').strip()
-    if not keyphrase:
-        return title[:max_len]
-    if keyphrase in title:
-        return title[:max_len]
-    remaining = max_len - len(keyphrase) - 1
-    if remaining <= 0:
-        return keyphrase[:max_len]
-    return f'{keyphrase} {title[:remaining].rstrip()}'
+    if len(title) + len(suffix) <= max_len:
+        return f'{title}{suffix}'
+    keep = max(1, max_len - len(suffix) - 1)
+    return f'{title[:keep].rstrip()}…{suffix}'
+
+
+def _build_meta_description(product: dict, overview_text: str, max_len: int = 110) -> str:
+    """メタディスクリプション（兼excerpt）。作品名＋概要の冒頭で、PC表示の上限（約110字）に収める。"""
+    plain = re.sub(r'\s+', ' ', overview_text or '').strip()
+    desc = f'{_short_title(product.get("title", ""), 20)}のレビュー。{plain}'
+    if len(desc) > max_len:
+        desc = desc[:max_len - 1].rstrip() + '…'
+    return desc
 
 
 # ================================================================
@@ -499,8 +506,9 @@ def _hero_html(product: dict) -> str:
     img_html = ''
     if product.get('package_image'):
         img_html = (
-            f'<img src="{escape(product["package_image"])}" alt="{escape(product["title"])}" '
-            'style="width:100%;display:block;border-radius:12px 12px 0 0;" loading="lazy">'
+            f'<img src="{escape(product["package_image"])}" alt="{escape(product["title"])} パッケージ画像" '
+            'style="width:100%;display:block;border-radius:12px 12px 0 0;" '
+            'loading="eager" fetchpriority="high" decoding="async">'
         )
 
     quick_badges = []
@@ -520,7 +528,7 @@ def _hero_html(product: dict) -> str:
 
     hero_cta = (
         '<div style="text-align:center;margin-top:10px;">'
-        f'<a href="{escape(product["affiliate_url"])}" target="_blank" rel="nofollow" '
+        f'<a href="{escape(product["affiliate_url"])}" target="_blank" rel="{LINK_REL}" '
         'style="display:inline-block;padding:12px 32px;background:linear-gradient(135deg,#ff6f91,#e0507a);'
         'color:#fff;text-decoration:none;border-radius:999px;font-size:15px;font-weight:bold;'
         'box-shadow:0 4px 12px rgba(224,80,122,0.35);">'
@@ -551,14 +559,64 @@ def _section(inner_html: str, is_first: bool = False) -> str:
     return f'<div style="{style}">{inner_html}</div>'
 
 
-def build_article(product: dict) -> dict:
+def _short_title(title: str, max_len: int = 24) -> str:
+    """H2見出し用に作品名を短縮する（長い同人タイトルで見出しが崩れるのを防ぐ）。"""
+    plain = re.sub(r'\s+', ' ', title or '').strip()
+    return plain if len(plain) <= max_len else plain[:max_len - 1].rstrip() + '…'
+
+
+def _disclosure_html() -> str:
+    """広告表記（ステマ規制対応）。ファーストビューに明示する。"""
+    return (
+        '<p style="font-size:12px;color:#888;margin:0 0 10px;text-align:center;">'
+        '※本記事にはアフィリエイト広告（PR）が含まれます。</p>'
+    )
+
+
+def _recommend_html(product: dict, short_title: str) -> str:
+    items = _build_recommend_for(product)
+    if not items:
+        return ''
+    li = ''.join(f'<li style="margin:6px 0;line-height:1.6;">{escape(x)}</li>' for x in items)
+    return (
+        f'<h2 style="margin:0 0 8px;font-size:17px;">👤 {escape(short_title)}はこんな人におすすめ</h2>'
+        f'<ul style="margin:0;padding-left:20px;">{li}</ul>'
+    )
+
+
+def _related_posts_html(related: list, heading: str) -> str:
+    """同じサークル/ジャンルの既存記事への内部リンク。クロール経路と回遊率を増やす。"""
+    if not related:
+        return ''
+    li = ''.join(
+        f'<li style="margin:6px 0;line-height:1.6;">'
+        f'<a href="{escape(p["link"])}">{escape(p["title"])}</a></li>'
+        for p in related
+    )
+    return (
+        f'<h2 style="margin:0 0 8px;font-size:17px;">🔗 {escape(heading)}</h2>'
+        f'<ul style="margin:0;padding-left:20px;">{li}</ul>'
+    )
+
+
+def _archive_link_html(url: str, text: str) -> str:
+    return (
+        '<p style="font-size:13px;margin:4px 0 0;text-align:center;">'
+        f'<a href="{escape(url)}">{escape(text)}</a></p>'
+    )
+
+
+def build_article(product: dict, terms: dict, related: list) -> dict:
+    """商品情報・タクソノミー情報・関連記事から、記事本文とSEOメタ情報を組み立てる。"""
+    title = product['title']
+    short_title = _short_title(title)
+    maker_label = 'サークル' if CONTENT_TYPE == 'doujin' else 'メーカー'
     focus_keyphrase = _build_focus_keyphrase(product)
-    genre_str = '、'.join(product.get('genres', [])[:3]) or '注目'
 
     genre_badges_html = _genre_badges_html(product.get('genres', []))
     gallery_html = _sample_gallery_html(
-        product.get('affiliate_url', ''), product.get('sample_images', []), product.get('title', ''),
-        heading='📸 作品サンプル',
+        product.get('affiliate_url', ''), product.get('sample_images', []), title,
+        heading=f'📸 {short_title}のサンプル画像',
     )
     video_html = _sample_video_html(product.get('sample_movie_url', ''))
 
@@ -566,26 +624,21 @@ def build_article(product: dict) -> dict:
     if product.get('maker'):
         meta_line_html = (
             '<div style="color:#666;font-size:13px;margin:0;">'
-            f'🏷️ サークル: {escape(product["maker"])}</div>'
+            f'🏷️ {maker_label}: {escape(product["maker"])}</div>'
         )
 
-    # ---- H2見出しでセクションを分割する ----
-    # ※「どんな作品？」セクションと「ここがポイント」セクションは
-    #   投稿しない方針のため、本文には含めない（build_article内では
-    #   points等は算出だけしておき、_build_recommend_for()等の他の
-    #   セクションの材料としてのみ使う）。
-    genre_section_html = ''
-    if product.get('genres'):
-        genre_section_html = (
-            '<h2 style="margin:0 0 8px;font-size:17px;">🎯 ジャンル・見どころ</h2>'
-            f'{genre_badges_html}'
-            f'{meta_line_html}'
+    # H2に作品名を含めて、「作品名＋あらすじ/価格/感想」系の検索意図に対応する
+    info_section_html = ''
+    if product.get('genres') or product.get('maker'):
+        info_section_html = (
+            f'<h2 style="margin:0 0 8px;font-size:17px;">🎯 {escape(short_title)}の作品情報</h2>'
+            f'{genre_badges_html}{meta_line_html}'
         )
 
     price_section_html = ''
     if product.get('price'):
         price_section_html = (
-            '<h2 style="margin:0 0 8px;font-size:17px;">💰 価格・購入方法</h2>'
+            f'<h2 style="margin:0 0 8px;font-size:17px;">💰 {escape(short_title)}の価格・購入方法</h2>'
             '<div style="display:inline-block;background:#fff0f5;color:#e0507a;'
             'border:1px solid #ffc2d6;border-radius:8px;padding:6px 14px;'
             f'font-size:15px;font-weight:bold;margin:6px 0;">価格 {escape(product["price"])}</div>'
@@ -593,85 +646,72 @@ def build_article(product: dict) -> dict:
             '作品ページから購入手続きに進めます（ダウンロード形式）。</p>'
         )
 
-    synopsis_section_html = _synopsis_html(WORK_OVERVIEW)
-    caution_section_html = _caution_html(WORK_CAUTION)
-
     cta_html = (
         '<div style="text-align:center;">'
-        f'<a href="{escape(product["affiliate_url"])}" target="_blank" rel="nofollow" '
+        f'<a href="{escape(product["affiliate_url"])}" target="_blank" rel="{LINK_REL}" '
         'style="display:inline-block;padding:14px 36px;background:linear-gradient(135deg,#ff6f91,#e0507a);'
         'color:#fff;text-decoration:none;border-radius:999px;font-size:16px;font-weight:bold;'
         'box-shadow:0 4px 12px rgba(224,80,122,0.35);">'
-        f'▶「{escape(product["title"][:20])}」の作品ページを見る</a></div>'
+        f'▶「{escape(title[:20])}」の作品ページを見る</a></div>'
     )
 
-    footer_html = ''
+    # ---- 内部リンク（カテゴリー/サークル/ジャンルのアーカイブへ）。URLはWPが返した実リンクを使う ----
     footer_parts = []
-    if WP_URL:
-        footer_parts.append(
-            f'<p style="font-size:13px;margin:14px 0 0;text-align:center;">'
-            f'<a href="{escape(WP_URL)}/category/{escape(WORK_CATEGORY_LABEL)}/">'
-            f'他の{escape(WORK_CATEGORY_LABEL)}作品もチェックする →</a></p>'
-        )
-        # レビュー記事から比較・ランキング的なページへの内部リンクは
-        # SEO・回遊率の両面で有効なため、先頭ジャンルのタグアーカイブにもリンクする。
-        first_genre = (product.get('genres') or [None])[0]
-        if first_genre:
-            footer_parts.append(
-                f'<p style="font-size:13px;margin:4px 0 0;text-align:center;">'
-                f'<a href="{escape(WP_URL)}/tag/{escape(urllib.parse.quote(first_genre))}/">'
-                f'「{escape(first_genre)}」の他の作品も見る →</a></p>'
-            )
+    category_link = terms.get('category_link') or (
+        f'{WP_URL}/category/{urllib.parse.quote(WORK_CATEGORY_LABEL)}/'
+    )
+    footer_parts.append(
+        f'<p style="font-size:13px;margin:14px 0 0;text-align:center;">'
+        f'<a href="{escape(category_link)}">他の{escape(WORK_CATEGORY_LABEL)}作品もチェックする →</a></p>'
+    )
+    tag_links = terms.get('tag_links') or {}
+    maker = product.get('maker')
+    if maker and tag_links.get(maker):
+        footer_parts.append(_archive_link_html(tag_links[maker], f'{maker_label}「{maker}」の他の作品を見る →'))
+    first_genre = (product.get('genres') or [None])[0]
+    if first_genre and tag_links.get(first_genre):
+        footer_parts.append(_archive_link_html(tag_links[first_genre], f'「{first_genre}」の他の作品も見る →'))
     footer_parts.append(
         '<p style="color:#999;font-size:12px;line-height:1.6;margin:10px 0 0;text-align:center;">'
         '※成人向けコンテンツを含みます。18歳未満の方はご利用いただけません。</p>'
     )
     footer_html = ''.join(footer_parts)
 
-    # ---- ヒーローエリア（画像＋価格＋星評価＋CTA）は必ず最初に置く ----
-    hero_html = _hero_html(product)
-
-    # 「どんな作品？」「ここがポイント」の2セクションは投稿しないため、
-    # ジャンルセクションを先頭（is_first=True）にする。
+    # 独自テキスト（あらすじ・おすすめ・注意点）を上に置き、ページ上部のテキスト量を確保する
     section_blocks = [
-        _section(genre_section_html, is_first=True),
+        _section(info_section_html, is_first=True),
+        _section(_synopsis_html(WORK_OVERVIEW, short_title)),
+        _section(_recommend_html(product, short_title)),
+        _section(_caution_html(WORK_CAUTION, short_title)),
         _section(price_section_html),
-        _section(synopsis_section_html),
-        _section(caution_section_html),
         _section(gallery_html),
         _section(video_html),
         _section(cta_html),
+        _section(_related_posts_html(related, f'同じ{maker_label}・ジャンルの作品')),
         footer_html,
     ]
 
-    card_inner = hero_html + '\n'.join(filter(None, section_blocks))
+    card_inner = _hero_html(product) + '\n'.join(filter(None, section_blocks))
 
     body_html = (
-        '<div style="max-width:600px;margin:0 auto;padding:20px;border:1px solid #eee;'
+        _disclosure_html()
+        + '<div style="max-width:600px;margin:0 auto;padding:20px;border:1px solid #eee;'
         'border-radius:16px;box-shadow:0 2px 12px rgba(0,0,0,0.06);font-family:'
         '-apple-system,BlinkMacSystemFont,\'Hiragino Sans\',sans-serif;">'
         f'{card_inner}</div>'
     )
 
-    seo_title = _build_seo_title(product, keyphrase=focus_keyphrase, max_len=20)
-    excerpt = _make_description_excerpt(WORK_OVERVIEW, product['title'], max_len=55)
-
-    tag_source = list(product.get('genres') or [])
-    actor_source = list(product.get('actors') or []) if CONTENT_TYPE == 'av' else []
-
     return {
-        'title':             product['title'],
-        'slug':              _make_slug(product.get('content_id', ''), product['title']),
-        'excerpt':           excerpt,
-        'body':              body_html,
-        'tags':              tag_source,
-        'actors':            actor_source,
-        'category_label':    WORK_CATEGORY_LABEL,
+        'title':              title,
+        'slug':               _make_slug(product.get('content_id', ''), title),
+        'excerpt':            _build_meta_description(product, WORK_OVERVIEW),
+        'body':               body_html,
+        'category_label':     WORK_CATEGORY_LABEL,
         'featured_image_url': product.get('package_image', ''),
-        'content_id':        product.get('content_id', ''),
-        'focus_keyphrase':   focus_keyphrase,
-        'seo_title':         seo_title,
-        'affiliate_url':     product.get('affiliate_url', ''),
+        'content_id':         product.get('content_id', ''),
+        'focus_keyphrase':    focus_keyphrase,
+        'seo_title':          _build_seo_title(product),
+        'affiliate_url':      product.get('affiliate_url', ''),
     }
 
 
@@ -682,6 +722,7 @@ def build_article(product: dict) -> dict:
 _category_cache = {}
 _tag_cache = {}
 _actress_cache = {}
+_term_links: dict = {}   # (taxonomy, name) -> アーカイブURL（内部リンク生成用）
 
 
 def _wp_auth():
@@ -696,11 +737,18 @@ _JSON_HEADERS = {
 }
 
 
-def _get_or_create_term(taxonomy: str, name: str, cache: dict):
+def _get_or_create_term(taxonomy: str, name: str, cache: dict) -> Optional[int]:
+    """タクソノミー（カテゴリー/タグ等）のIDを取得し、無ければ作成する。アーカイブURLも記録する。"""
     if not name:
         return None
     if name in cache:
         return cache[name]
+
+    def remember(term: dict) -> int:
+        cache[name] = term['id']
+        if term.get('link'):
+            _term_links[(taxonomy, name)] = term['link']
+        return term['id']
 
     endpoint = f'{WP_URL}/wp-json/wp/v2/{taxonomy}'
     try:
@@ -716,8 +764,7 @@ def _get_or_create_term(taxonomy: str, name: str, cache: dict):
             if isinstance(results, list):
                 for term in results:
                     if isinstance(term, dict) and term.get('name') == name:
-                        cache[name] = term['id']
-                        return term['id']
+                        return remember(term)
 
         resp = requests.post(
             endpoint, data=json.dumps({'name': name}).encode('utf-8'),
@@ -729,9 +776,7 @@ def _get_or_create_term(taxonomy: str, name: str, cache: dict):
             except ValueError:
                 created = None
             if isinstance(created, dict) and 'id' in created:
-                term_id = created['id']
-                cache[name] = term_id
-                return term_id
+                return remember(created)
             print(f'    ⚠️ タクソノミー"{name}"の作成レスポンスが想定外の形式です: {resp.text[:200]}')
             return None
 
@@ -752,7 +797,108 @@ def _get_or_create_term(taxonomy: str, name: str, cache: dict):
         return None
 
 
-def _upload_featured_image(image_url: str, content_id: str):
+def collect_tag_names(product: dict) -> list:
+    """
+    タグ候補：ジャンル（上位6件）＋サークル/メーカー＋シリーズ。
+    サークル名・シリーズ名は「サークル名 作品」型の検索を拾うハブページ（タグ一覧）になる。
+    ジャンルは増やしすぎると記事数の少ない薄いアーカイブが量産されるため上限を設ける。
+    """
+    names = list((product.get('genres') or [])[:6])
+    for extra in (product.get('maker'), product.get('series')):
+        if extra and extra not in names:
+            names.append(extra)
+    return [n for n in names if n]
+
+
+def collect_actor_names(product: dict) -> list:
+    return list(product.get('actors') or []) if CONTENT_TYPE == 'av' else []
+
+
+def resolve_terms(category_label: str, tag_names: list, actor_names: list, maker: str = '') -> dict:
+    """カテゴリー/タグ/出演者のIDとアーカイブURLを解決する（本文の内部リンク生成より先に実行する）。"""
+    category_label = category_label or DEFAULT_CATEGORY
+    category_id = _get_or_create_term('categories', category_label, _category_cache)
+
+    tag_ids: list = []
+    for name in tag_names:
+        if not name or name == category_label:
+            continue
+        tid = _get_or_create_term('tags', name, _tag_cache)
+        if tid and tid not in tag_ids:
+            tag_ids.append(tid)
+
+    actress_ids: list = []
+    for name in actor_names:
+        aid = _get_or_create_term('onavi_actress', name, _actress_cache)
+        if aid and aid not in actress_ids:
+            actress_ids.append(aid)
+
+    return {
+        'category_ids':  [category_id] if category_id else [],
+        'tag_ids':       tag_ids,
+        'actress_ids':   actress_ids,
+        'category_link': _term_links.get(('categories', category_label), ''),
+        'tag_links':     {n: _term_links[('tags', n)] for n in tag_names if ('tags', n) in _term_links},
+        'maker_tag_id':  _tag_cache.get(maker) if maker else None,
+    }
+
+
+def fetch_related_posts(tag_ids: list, maker_tag_id: Optional[int] = None, limit: int = 5) -> list:
+    """
+    公開済みの記事から、同じタグ（特にサークル/メーカー）を持つ記事を取得して内部リンク用に返す。
+    取得に失敗しても投稿自体は止めない（関連記事なしで続行）。
+    """
+    if not tag_ids:
+        return []
+    try:
+        resp = requests.get(
+            f'{WP_URL}/wp-json/wp/v2/posts',
+            params={
+                'tags': ','.join(str(t) for t in tag_ids),
+                'status': 'publish', 'per_page': 30, '_fields': 'id,link,title,tags',
+            },
+            headers=_JSON_HEADERS, timeout=15,
+        )
+        if resp.status_code != 200:
+            print(f'    ⚠️ 関連記事の取得に失敗 status={resp.status_code}（関連記事なしで続行）')
+            return []
+        posts = resp.json()
+    except Exception as e:
+        print(f'    ⚠️ 関連記事の取得エラー: {e}（関連記事なしで続行）')
+        return []
+
+    if not isinstance(posts, list):
+        return []
+
+    wanted = set(tag_ids)
+    scored = []
+    for p in posts:
+        if not isinstance(p, dict) or not p.get('link'):
+            continue
+        post_tags = set(p.get('tags') or [])
+        score = len(post_tags & wanted) + (3 if maker_tag_id and maker_tag_id in post_tags else 0)
+        title = html.unescape(((p.get('title') or {}).get('rendered')) or '')
+        if title:
+            scored.append((score, {'title': title, 'link': p['link']}))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [item for _, item in scored[:limit]]
+
+
+def _set_media_alt(media_id: int, alt_text: str) -> None:
+    """アイキャッチ画像のalt/タイトルを設定する（画像検索・アクセシビリティ対策）。失敗しても続行。"""
+    try:
+        resp = requests.post(
+            f'{WP_URL}/wp-json/wp/v2/media/{media_id}',
+            data=json.dumps({'alt_text': alt_text, 'title': alt_text}).encode('utf-8'),
+            auth=_wp_auth(), headers=_JSON_HEADERS, timeout=15,
+        )
+        if resp.status_code not in (200, 201):
+            print(f'    ⚠️ 画像altの設定に失敗 status={resp.status_code}: {resp.text[:200]}')
+    except Exception as e:
+        print(f'    ⚠️ 画像altの設定エラー: {e}')
+
+
+def _upload_featured_image(image_url: str, content_id: str, alt_text: str = '') -> Optional[int]:
     if not image_url:
         return None
     try:
@@ -777,7 +923,10 @@ def _upload_featured_image(image_url: str, content_id: str):
             timeout=30,
         )
         if resp.status_code in (200, 201):
-            return resp.json()['id']
+            media_id = resp.json()['id']
+            if alt_text:
+                _set_media_alt(media_id, alt_text)
+            return media_id
         print(f'    ⚠️ アイキャッチ画像のアップロードに失敗 status={resp.status_code}: {resp.text[:200]}')
         return None
     except Exception as e:
@@ -815,38 +964,9 @@ def find_existing_post_by_slug(slug: str):
         return None
 
 
-def post_draft_to_wordpress(article: dict) -> bool:
-    # ---- 同じ品番（slug）の投稿が既に存在する場合は、重複投稿しない ----
-    existing = find_existing_post_by_slug(article.get('slug', ''))
-    if existing:
-        print(f'    ⏭️ 品番「{article.get("content_id", "")}」（slug={article.get("slug", "")}）は'
-              f'既に投稿済みのためスキップします。'
-              f'（既存記事: status={existing.get("status")}, id={existing.get("id")}, link={existing.get("link", "")}）')
-        return None  # 新規作成しなかったことを呼び出し元が区別できるよう None を返す
-
+def post_draft_to_wordpress(article: dict, terms: dict) -> bool:
+    """記事をWordPressへ投稿する。重複チェックとタクソノミー解決は呼び出し元（main）で済ませておく。"""
     endpoint = f'{WP_URL}/wp-json/wp/v2/posts'
-
-    category_label = article.get('category_label') or DEFAULT_CATEGORY
-    category_ids = []
-    base_category_id = _get_or_create_term('categories', category_label, _category_cache)
-    if base_category_id:
-        category_ids.append(base_category_id)
-
-    tag_ids = []
-    for tag_name in article.get('tags', []):
-        if not tag_name or tag_name == category_label:
-            continue
-        tid = _get_or_create_term('tags', tag_name, _tag_cache)
-        if tid and tid not in tag_ids:
-            tag_ids.append(tid)
-
-    actress_ids = []
-    for actor_name in article.get('actors', []):
-        if not actor_name:
-            continue
-        aid = _get_or_create_term('onavi_actress', actor_name, _actress_cache)
-        if aid and aid not in actress_ids:
-            actress_ids.append(aid)
 
     payload = {
         'title':      article['title'],
@@ -854,34 +974,29 @@ def post_draft_to_wordpress(article: dict) -> bool:
         'excerpt':    article.get('excerpt') or '',
         'content':    article['body'],
         'status':     WP_POST_STATUS,
-        'categories': category_ids,
-        'tags':       tag_ids,
+        'categories': terms.get('category_ids', []),
+        'tags':       terms.get('tag_ids', []),
     }
-    if actress_ids:
-        payload['onavi_actress'] = actress_ids
+    if terms.get('actress_ids'):
+        payload['onavi_actress'] = terms['actress_ids']
 
     meta = {}
-    focus_keyphrase = article.get('focus_keyphrase') or ''
-    if focus_keyphrase:
-        meta['_yoast_wpseo_focuskw'] = focus_keyphrase
-    seo_title = article.get('seo_title') or ''
-    if seo_title:
-        meta['_yoast_wpseo_title'] = seo_title
-    metadesc = article.get('excerpt') or ''
-    if metadesc:
-        meta['_yoast_wpseo_metadesc'] = metadesc
+    if article.get('focus_keyphrase'):
+        meta['_yoast_wpseo_focuskw'] = article['focus_keyphrase']
+    if article.get('seo_title'):
+        meta['_yoast_wpseo_title'] = article['seo_title']
+    if article.get('excerpt'):
+        meta['_yoast_wpseo_metadesc'] = article['excerpt']
     meta['_onavi_script_version'] = SCRIPT_VERSION
     if article.get('affiliate_url'):
         meta['_onavi_affiliate_url'] = article['affiliate_url']
-    if meta:
-        payload['meta'] = meta
+    payload['meta'] = meta
 
-    # ---- アイキャッチ画像を設定する ----
-    # トップページのグリッド表示（get_the_post_thumbnail()）で使うため、
-    # アイキャッチ自体は引き続き設定する。個別記事ページのタイトル上に
-    # 自動表示される画像は、CSS側（body.single .post-image を非表示）で
-    # 見た目だけ消す方針にしている（データとしては保持する）。
-    media_id = _upload_featured_image(article.get('featured_image_url', ''), article.get('content_id', ''))
+    # アイキャッチはトップのグリッド表示で使う。altに作品名を入れて画像検索にも対応する。
+    media_id = _upload_featured_image(
+        article.get('featured_image_url', ''), article.get('content_id', ''),
+        alt_text=f'{article["title"]} パッケージ画像',
+    )
     if media_id:
         payload['featured_media'] = media_id
 
@@ -895,24 +1010,32 @@ def post_draft_to_wordpress(article: dict) -> bool:
             print(f"    🔎 リダイレクトが発生しています: {redirect_chain}")
         print(f"    🔎 HTTPステータス: {resp.status_code}")
 
-        if resp.status_code in (200, 201):
-            try:
-                result = resp.json()
-            except ValueError:
-                result = None
-            if not isinstance(result, dict) or 'id' not in result:
-                print(f"    ❌ 投稿失敗：WordPressから投稿データが返りませんでした: {resp.text[:300]}")
-                return False
-            actual_status = result.get('status')
-            if actual_status != WP_POST_STATUS:
-                print(f"    ⚠️ 指定したステータス（{WP_POST_STATUS}）と異なる値が返りました"
-                      f"（status={actual_status}）。念のため内容をご確認ください: {result.get('link', '')}")
-            print(f"    ✅ {actual_status}として投稿成功: {article['title'][:40]}")
-            print(f"    🔗 link: {result.get('link', '')}")
-            return True
-        else:
+        if resp.status_code not in (200, 201):
             print(f"    ❌ 投稿失敗 status={resp.status_code}: {resp.text[:300]}")
             return False
+
+        try:
+            result = resp.json()
+        except ValueError:
+            result = None
+        if not isinstance(result, dict) or 'id' not in result:
+            print(f"    ❌ 投稿失敗：WordPressから投稿データが返りませんでした: {resp.text[:300]}")
+            return False
+
+        actual_status = result.get('status')
+        if actual_status != WP_POST_STATUS:
+            print(f"    ⚠️ 指定したステータス（{WP_POST_STATUS}）と異なる値が返りました"
+                  f"（status={actual_status}）。内容をご確認ください: {result.get('link', '')}")
+        print(f"    ✅ {actual_status}として投稿成功: {article['title'][:40]}")
+        print(f"    🔗 link: {result.get('link', '')}")
+
+        # Yoastメタが保存されていない（REST未公開）場合に気づけるよう、返却値を検証する
+        saved_meta = result.get('meta') or {}
+        if isinstance(saved_meta, dict) and '_yoast_wpseo_title' in meta \
+                and saved_meta.get('_yoast_wpseo_title') != meta['_yoast_wpseo_title']:
+            print('    ⚠️ Yoastのtitle/descriptionがRESTで保存されていない可能性があります。'
+                  'register_post_meta(show_in_rest=true) の設定を確認してください。')
+        return True
     except Exception as e:
         print(f"    ❌ 投稿エラー: {e}")
         return False
@@ -922,7 +1045,7 @@ def post_draft_to_wordpress(article: dict) -> bool:
 # 🚀 メイン実行
 # ================================================================
 
-def main():
+def main() -> None:
     print(f'\n🔎 品番「{WORK_CONTENT_ID}」の作品情報をDMM APIから取得します...')
     raw_item = fetch_product_by_cid(WORK_CONTENT_ID)
     if not raw_item:
@@ -932,14 +1055,27 @@ def main():
     print(f'✅ 取得成功: {product["title"][:50]}')
     print(f'   ジャンル: {"、".join(product["genres"][:5]) or "不明"} / 価格: {product.get("price") or "不明"}')
 
-    print(f'\n📝 記事生成中...')
-    article = build_article(product)
-    result = post_draft_to_wordpress(article)
-    if result is None:
-        # 既に同じ品番が投稿済みだったためスキップしたケース。
-        # 異常事態ではないので、ワークフローは正常終了（exit code 0）扱いにする。
-        print('\n⏭️ 重複のためスキップしました（新規投稿は行っていません）。')
-    elif result:
+    # 副作用（タクソノミー作成・画像アップロード）の前に重複チェックを行う
+    slug = _make_slug(product.get('content_id', ''), product['title'])
+    existing = find_existing_post_by_slug(slug)
+    if existing:
+        print(f'\n⏭️ 品番「{product.get("content_id", "")}」は既に投稿済みのためスキップします。'
+              f'（status={existing.get("status")}, id={existing.get("id")}, link={existing.get("link", "")}）')
+        return
+
+    print('\n🏷️ カテゴリー/タグを準備し、関連記事を検索します...')
+    terms = resolve_terms(
+        WORK_CATEGORY_LABEL,
+        collect_tag_names(product),
+        collect_actor_names(product),
+        maker=product.get('maker', ''),
+    )
+    related = fetch_related_posts(terms['tag_ids'], terms.get('maker_tag_id'))
+    print(f'   関連記事: {len(related)}件')
+
+    print('\n📝 記事生成中...')
+    article = build_article(product, terms, related)
+    if post_draft_to_wordpress(article, terms):
         print(f'\n✅ 完了！WordPressに{WP_POST_STATUS}として投稿しました。')
         print('   ※ 公開前に必ず内容をご確認ください。')
     else:
