@@ -1070,8 +1070,9 @@ def main() -> None:
         collect_actor_names(product),
         maker=product.get('maker', ''),
     )
-    related = fetch_related_posts(terms['tag_ids'], terms.get('maker_tag_id'))
-    print(f'   関連記事: {len(related)}件')
+    # 関連作品はWP側スニペット（the_contentフィルター）で動的表示するため、本文への静的埋め込みは行わない
+    #（静的埋め込みだと投稿時点の記事にしかリンクできず、重複表示にもなる）
+    related: list = []
 
     print('\n📝 記事生成中...')
     article = build_article(product, terms, related)
