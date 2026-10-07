@@ -24,7 +24,7 @@ on:
       wp_post_status:
         description: "投稿ステータス（draft / pending / publish）"
         required: false
-        default: "draft"
+        default: "publish"
 
 permissions:
   contents: read
