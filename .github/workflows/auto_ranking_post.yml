@@ -1,0 +1,80 @@
+name: FANZA同人 ランキング上位 → WordPress 自動投稿（毎日3作品）
+
+on:
+  schedule:
+    # UTC 00:00 = 日本時間 09:00。GitHubのcronは数分〜十数分遅れることがある
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+    inputs:
+      posts_per_day:
+        description: '1日の投稿数（JST基準。当日の投稿済み数を差し引いた残りだけ投稿）'
+        required: false
+        default: '3'
+        type: string
+      wp_post_status:
+        description: '投稿ステータス'
+        required: false
+        default: 'publish'
+        type: choice
+        options:
+          - publish
+          - draft
+          - pending
+      dry_run:
+        description: 'ドライラン（投稿せず、選ばれる作品だけをログに出す）'
+        required: false
+        default: false
+        type: boolean
+
+# 履歴ファイル(outputs/)をコミットするため書き込み権限が必要
+permissions:
+  contents: write
+
+concurrency:
+  # 手動実行とcronが重なっても二重投稿しないよう直列化する
+  group: auto-ranking-post
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Post ranking works to WordPress
+        env:
+          DMM_API_ID:       ${{ secrets.DMM_API_ID }}
+          DMM_AFFILIATE_ID: ${{ secrets.DMM_AFFILIATE_ID }}
+          WP_URL:           ${{ secrets.WP_URL }}
+          WP_USERNAME:      ${{ secrets.WP_USERNAME }}
+          WP_APP_PASSWORD:  ${{ secrets.WP_APP_PASSWORD }}
+          # cron実行時は inputs が空になるため、ここで既定値を指定する
+          WP_POST_STATUS:   ${{ inputs.wp_post_status || 'publish' }}
+          POSTS_PER_DAY:    ${{ inputs.posts_per_day || '3' }}
+          DRY_RUN:          ${{ inputs.dry_run && 'true' || 'false' }}
+        run: python scripts/wordpress_ranking_auto_poster.py
+
+      # 途中で失敗しても、投稿済み分の履歴は残す（always）。dry-run時は履歴が変わらないので不要
+      - name: Commit posted history
+        if: ${{ always() && !inputs.dry_run }}
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add outputs/ranking_posted_history.json
+          if git diff --staged --quiet; then
+            echo "履歴の変更なし"
+            exit 0
+          fi
+          git commit -m "🤖 ランキング自動投稿 履歴更新 ($(TZ=Asia/Tokyo date +'%Y-%m-%d %H:%M:%S'))"
+          git pull --rebase --autostash
+          git push
